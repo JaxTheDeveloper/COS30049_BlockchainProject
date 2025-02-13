@@ -6,8 +6,8 @@ function Footer() {
     <footer className="footer">
       <div className="footer-content">
         <div className="footer-section">
-          <h4>Etherscan Clone</h4>
-          <p>© 2024 Etherscan Clone</p>
+          <h4>Blockchain Explorer</h4>
+          <p>© 2024 Blockchain Explorer</p>
         </div>
         <div className="footer-section">
           <h4>Resources</h4>
