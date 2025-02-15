@@ -1,5 +1,14 @@
 import React from 'react';
-import './WalletInfo.css';
+import { 
+  Container, 
+  Paper, 
+  Typography, 
+  Box, 
+  CircularProgress, 
+  Alert, 
+  Grid, 
+  Divider 
+} from '@mui/material';
 
 function WalletInfo({ loading, error, walletData }) {
   const formatDate = (dateString) => {
@@ -14,79 +23,124 @@ function WalletInfo({ loading, error, walletData }) {
     return `${address.substring(0, 6)}...${address.substring(address.length - 4)}`;
   };
 
+  if (loading) {
+    return (
+      <Box display="flex" justifyContent="center" p={4}>
+        <CircularProgress />
+      </Box>
+    );
+  }
+
+  if (error) {
+    return (
+      <Container maxWidth="lg" sx={{ py: 4 }}>
+        <Alert severity="error">
+          <Typography variant="h6">Error</Typography>
+          <Typography>{error}</Typography>
+        </Alert>
+      </Container>
+    );
+  }
+
+  if (!walletData) return null;
+
   return (
-    <main className="main-content">
-      {loading && <div className="loading">Loading wallet information...</div>}
-      
-      {error && (
-        <div className="error">
-          <h3>Error</h3>
-          <p>{error}</p>
-        </div>
-      )}
+    <Container 
+      maxWidth="lg" 
+      sx={{ 
+        py: 4,
+        height: '100%',
+        overflowY: 'auto'  // Allow scrolling within the container
+      }}
+    >
+      <Paper elevation={2}>
+        <Box p={3}>
+          <Typography variant="h5" gutterBottom>Wallet Information</Typography>
+          <Grid container spacing={2}>
+            <Grid item xs={12}>
+              <Box display="flex" justifyContent="space-between" p={2}>
+                <Typography color="textSecondary">Address:</Typography>
+                <Typography>{walletData.address}</Typography>
+              </Box>
+            </Grid>
+            <Grid item xs={12}>
+              <Box display="flex" justifyContent="space-between" p={2}>
+                <Typography color="textSecondary">Balance:</Typography>
+                <Typography>{walletData.balance} ETH</Typography>
+              </Box>
+            </Grid>
+            <Grid item xs={12}>
+              <Box display="flex" justifyContent="space-between" p={2}>
+                <Typography color="textSecondary">Transaction Count:</Typography>
+                <Typography>{walletData.transactionCount}</Typography>
+              </Box>
+            </Grid>
+            <Grid item xs={12}>
+              <Box display="flex" justifyContent="space-between" p={2}>
+                <Typography color="textSecondary">Last Updated:</Typography>
+                <Typography>{formatDate(walletData.lastUpdated)}</Typography>
+              </Box>
+            </Grid>
+          </Grid>
+        </Box>
 
-      {walletData && (
-        <div className="wallet-info">
-          <h2>Wallet Information</h2>
-          <div className="info-card">
-            <p>
-              <strong>Address:</strong>
-              <span className="address">{walletData.address}</span>
-            </p>
-            <p>
-              <strong>Balance:</strong>
-              <span>{walletData.balance} ETH</span>
-            </p>
-            <p>
-              <strong>Transaction Count:</strong>
-              <span>{walletData.transactionCount}</span>
-            </p>
-            <p>
-              <strong>Last Updated:</strong>
-              <span>{formatDate(walletData.lastUpdated)}</span>
-            </p>
-          </div>
+        <Divider />
 
-          <h3>Recent Transactions</h3>
-          <div className="transactions-list">
-            {walletData.recentTransactions.length > 0 ? (
-              walletData.recentTransactions.map((tx) => (
-                <div key={tx.hash} className={`transaction-item ${tx.isError ? 'error' : 'success'}`}>
-                  <p>
-                    <strong>Hash:</strong>
-                    <span className="hash">{formatAddress(tx.hash)}</span>
-                  </p>
-                  <p>
-                    <strong>From:</strong>
-                    <span className="address">{formatAddress(tx.from)}</span>
-                  </p>
-                  <p>
-                    <strong>To:</strong>
-                    <span className="address">{formatAddress(tx.to)}</span>
-                  </p>
-                  <p>
-                    <strong>Value:</strong>
-                    <span>{tx.value} ETH</span>
-                  </p>
-                  <p>
-                    <strong>Time:</strong>
-                    <span>{formatDate(tx.timestamp)}</span>
-                  </p>
-                  <p>
-                    <strong>Status:</strong>
-                    <span className={tx.isError ? 'error-text' : 'success-text'}>
-                      {tx.isError ? 'Failed' : 'Success'}
-                    </span>
-                  </p>
-                </div>
-              ))
-            ) : (
-              <p className="no-transactions">No transactions found</p>
-            )}
-          </div>
-        </div>
-      )}
-    </main>
+        <Box p={3}>
+          <Typography variant="h5" gutterBottom>Recent Transactions</Typography>
+          {walletData.recentTransactions.length > 0 ? (
+            walletData.recentTransactions.map((tx) => (
+              <Paper key={tx.hash} elevation={1} sx={{ p: 2, mb: 2 }}>
+                <Grid container spacing={2}>
+                  <Grid item xs={12}>
+                    <Box display="flex" justifyContent="space-between">
+                      <Typography color="textSecondary">Hash:</Typography>
+                      <Typography>{formatAddress(tx.hash)}</Typography>
+                    </Box>
+                  </Grid>
+                  <Grid item xs={12}>
+                    <Box display="flex" justifyContent="space-between">
+                      <Typography color="textSecondary">From:</Typography>
+                      <Typography>{formatAddress(tx.from)}</Typography>
+                    </Box>
+                  </Grid>
+                  <Grid item xs={12}>
+                    <Box display="flex" justifyContent="space-between">
+                      <Typography color="textSecondary">To:</Typography>
+                      <Typography>{formatAddress(tx.to)}</Typography>
+                    </Box>
+                  </Grid>
+                  <Grid item xs={12}>
+                    <Box display="flex" justifyContent="space-between">
+                      <Typography color="textSecondary">Value:</Typography>
+                      <Typography>{tx.value} ETH</Typography>
+                    </Box>
+                  </Grid>
+                  <Grid item xs={12}>
+                    <Box display="flex" justifyContent="space-between">
+                      <Typography color="textSecondary">Time:</Typography>
+                      <Typography>{formatDate(tx.timestamp)}</Typography>
+                    </Box>
+                  </Grid>
+                  <Grid item xs={12}>
+                    <Box display="flex" justifyContent="space-between">
+                      <Typography color="textSecondary">Status:</Typography>
+                      <Typography color={tx.isError ? 'error' : 'success'}>
+                        {tx.isError ? 'Failed' : 'Success'}
+                      </Typography>
+                    </Box>
+                  </Grid>
+                </Grid>
+              </Paper>
+            ))
+          ) : (
+            <Typography color="textSecondary" align="center">
+              No transactions found
+            </Typography>
+          )}
+        </Box>
+      </Paper>
+    </Container>
   );
 }
 

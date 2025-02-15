@@ -1,5 +1,12 @@
 import React, { useState, useEffect } from 'react';
-import './Header.css';
+import { 
+  Box, 
+  Container, 
+  Paper, 
+  Typography, 
+  Grid, 
+  CircularProgress 
+} from '@mui/material';
 
 function Header() {
   const [marketData, setMarketData] = useState({
@@ -39,50 +46,68 @@ function Header() {
   }, []);
 
   return (
-    <header className="header">
-      <div className="stats-container">
-        <div className="stat-box">
-          <h3>ETHER PRICE</h3>
-          {loading ? (
-            <p>Loading...</p>
-          ) : error ? (
-            <p className="error-text">Error loading data</p>
-          ) : (
-            <p>${marketData.price} USD</p>
-          )}
-        </div>
-        <div className="stat-box">
-          <h3>MARKET CAP</h3>
-          {loading ? (
-            <p>Loading...</p>
-          ) : error ? (
-            <p className="error-text">Error loading data</p>
-          ) : (
-            <p>${marketData.marketCap}B USD</p>
-          )}
-        </div>
-        <div className="stat-box">
-          <h3>TRANSACTIONS</h3>
-          {loading ? (
-            <p>Loading...</p>
-          ) : error ? (
-            <p className="error-text">Error loading data</p>
-          ) : (
-            <p>{marketData.transactions}</p>
-          )}
-        </div>
-        <div className="stat-box">
-          <h3>LAST BLOCK</h3>
-          {loading ? (
-            <p>Loading...</p>
-          ) : error ? (
-            <p className="error-text">Error loading data</p>
-          ) : (
-            <p>#{marketData.lastBlock}</p>
-          )}
-        </div>
-      </div>
-    </header>
+    <Box sx={{ bgcolor: 'grey.50', py: 3 }}>
+      <Container maxWidth="lg">
+        <Grid container spacing={2} justifyContent="center">
+          <Grid item xs={12} sm={6} md={3}>
+            <Paper sx={{ p: 2, textAlign: 'center', height: '100%' }}>
+              <Typography variant="subtitle2" color="text.secondary" gutterBottom>
+                ETHER PRICE
+              </Typography>
+              {loading ? (
+                <CircularProgress size={20} />
+              ) : error ? (
+                <Typography color="error">Error loading data</Typography>
+              ) : (
+                <Typography variant="h6">${marketData.price} USD</Typography>
+              )}
+            </Paper>
+          </Grid>
+          <Grid item xs={12} sm={6} md={3}>
+            <Paper sx={{ p: 2, textAlign: 'center', height: '100%' }}>
+              <Typography variant="subtitle2" color="text.secondary" gutterBottom>
+                MARKET CAP
+              </Typography>
+              {loading ? (
+                <CircularProgress size={20} />
+              ) : error ? (
+                <Typography color="error">Error loading data</Typography>
+              ) : (
+                <Typography variant="h6">${marketData.marketCap}B USD</Typography>
+              )}
+            </Paper>
+          </Grid>
+          <Grid item xs={12} sm={6} md={3}>
+            <Paper sx={{ p: 2, textAlign: 'center', height: '100%' }}>
+              <Typography variant="subtitle2" color="text.secondary" gutterBottom>
+                TRANSACTIONS
+              </Typography>
+              {loading ? (
+                <CircularProgress size={20} />
+              ) : error ? (
+                <Typography color="error">Error loading data</Typography>
+              ) : (
+                <Typography variant="h6">{marketData.transactions}</Typography>
+              )}
+            </Paper>
+          </Grid>
+          <Grid item xs={12} sm={6} md={3}>
+            <Paper sx={{ p: 2, textAlign: 'center', height: '100%' }}>
+              <Typography variant="subtitle2" color="text.secondary" gutterBottom>
+                LAST BLOCK
+              </Typography>
+              {loading ? (
+                <CircularProgress size={20} />
+              ) : error ? (
+                <Typography color="error">Error loading data</Typography>
+              ) : (
+                <Typography variant="h6">#{marketData.lastBlock}</Typography>
+              )}
+            </Paper>
+          </Grid>
+        </Grid>
+      </Container>
+    </Box>
   );
 }
 

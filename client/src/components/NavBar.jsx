@@ -1,8 +1,20 @@
 import React, { useState } from 'react';
-import './NavBar.css';
+import { 
+  AppBar,
+  Toolbar,
+  TextField,
+  Select,
+  MenuItem,
+  InputAdornment,
+  IconButton,
+  Box,
+  FormControl
+} from '@mui/material';
+import SearchIcon from '@mui/icons-material/Search';
 
 function NavBar({ onSearch }) {
   const [searchValue, setSearchValue] = useState('');
+  const [filter, setFilter] = useState('all');
 
   const handleSubmit = (e) => {
     e.preventDefault();
@@ -13,33 +25,53 @@ function NavBar({ onSearch }) {
   };
 
   return (
-    <nav className="navbar">
-      <div className="navbar-content">
-        <form onSubmit={handleSubmit} className="search-form">
-          <div className="search-wrapper">
-            <select className="search-filter">
-              <option value="all">All Filters</option>
-              <option value="addresses">Addresses</option>
-              <option value="tokens">Tokens</option>
-              <option value="blocks">Blocks</option>
-            </select>
-            <input
-              type="text"
-              value={searchValue}
-              onChange={(e) => setSearchValue(e.target.value)}
-              placeholder="Search by Address / Txn Hash / Block / Token"
-              className="search-input"
-            />
-            <button type="submit" className="search-button">
-              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <circle cx="11" cy="11" r="8"></circle>
-                <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
-              </svg>
-            </button>
-          </div>
-        </form>
-      </div>
-    </nav>
+    <AppBar position="sticky" color="default" elevation={1}>
+      <Toolbar>
+        <Box
+          component="form"
+          onSubmit={handleSubmit}
+          sx={{
+            width: '100%',
+            maxWidth: 800,
+            margin: '0 auto',
+            display: 'flex',
+            gap: 1
+          }}
+        >
+          <FormControl sx={{ minWidth: 120 }}>
+            <Select
+              value={filter}
+              onChange={(e) => setFilter(e.target.value)}
+              size="small"
+              sx={{ bgcolor: 'background.paper' }}
+            >
+              <MenuItem value="all">All Filters</MenuItem>
+              <MenuItem value="addresses">Addresses</MenuItem>
+              <MenuItem value="tokens">Tokens</MenuItem>
+              <MenuItem value="blocks">Blocks</MenuItem>
+            </Select>
+          </FormControl>
+
+          <TextField
+            fullWidth
+            size="small"
+            value={searchValue}
+            onChange={(e) => setSearchValue(e.target.value)}
+            placeholder="Search by Address / Txn Hash / Block / Token"
+            sx={{ bgcolor: 'background.paper' }}
+            InputProps={{
+              endAdornment: (
+                <InputAdornment position="end">
+                  <IconButton type="submit" edge="end">
+                    <SearchIcon />
+                  </IconButton>
+                </InputAdornment>
+              ),
+            }}
+          />
+        </Box>
+      </Toolbar>
+    </AppBar>
   );
 }
 
