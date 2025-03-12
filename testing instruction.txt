@@ -1,0 +1,19 @@
+install slither into you local machine
+install all component in both client and server
+run both server
+
+to check the feature
+run this first to upload .sol file so that slither can analyze the .sol file
+(i already created a sample .sol for checking this feature)
+
+curl.exe -X POST http://localhost:5000/api/upload-contract -F "contract=@E:/school/COS30049_BlockchainProject/server/uploads/TestContract.sol" -F "name=Test Vulnerable Contract" -F "address=0x123456789abcdef123456789abcdef123456789a"
+
+after that by running http://localhost:xxxx/api/contract/12/  (number 12 is the latest contract id)
+you can see the status of the contract after being analyzed by slither
+
+by running http://localhost:xxxx/api/contracts
+you can see all the analyzed contracts from database
+
+by running this http://localhost:xxxx/api/contract/12/report 
+you can see the result from slither about that contract
+
