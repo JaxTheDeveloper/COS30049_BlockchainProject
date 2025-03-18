@@ -13,6 +13,8 @@ const multer = require("multer");
 const util = require("util");
 const execPromise = util.promisify(exec);
 const crypto = require("crypto");
+const { Worker, workerData, isMainThread, parentPort } = require('worker_threads');
+const os = require('os');
 
 // config dotenv
 dotenv.config();
@@ -227,8 +229,339 @@ app.get("/test-neo4j-connection", async (req, res) => {
     return;
 });
 
+// Create a thread pool for background processing
+const MAX_WORKERS = Math.max(2, os.cpus().length - 1); // Use all CPUs except one
+const workerPool = [];
+const workerQueue = [];
+let activeWorkers = 0;
+
+// Initialize worker pool
+function initializeWorkerPool() {
+    console.log(`Initializing worker pool with ${MAX_WORKERS} workers`);
+    for (let i = 0; i < MAX_WORKERS; i++) {
+        workerPool.push(null); // Reserve slots
+    }
+}
+
+// Call this after database initialization
+initializeWorkerPool();
+
+// Function to get an available worker
+function getAvailableWorkerIndex() {
+    for (let i = 0; i < workerPool.length; i++) {
+        if (workerPool[i] === null) {
+            return i;
+        }
+    }
+    return -1; // No available workers
+}
+
+// Modify the worker queue processing function to be more robust
+function processWorkerQueue() {
+    // Process as many tasks as we have available workers
+    while (workerQueue.length > 0 && activeWorkers < MAX_WORKERS) {
+    const workerIndex = getAvailableWorkerIndex();
+        if (workerIndex === -1) break; // No available workers
+
+    const task = workerQueue.shift();
+        console.log(`[MAIN] Starting worker ${workerIndex} for address ${task.address}, page ${task.page} (${activeWorkers+1}/${MAX_WORKERS} workers active, ${workerQueue.length} tasks in queue)`);
+    
+    const worker = new Worker('./transactionWorker.js', {
+        workerData: task
+    });
+
+    activeWorkers++;
+    workerPool[workerIndex] = worker;
+
+    worker.on('message', async (message) => {
+        try {
+            if (message.type === 'transactions') {
+                    const txCount = message.transactions.length;
+                    console.log(`[MAIN] Worker ${workerIndex} completed: Processed ${txCount} transactions for address ${message.address} (page ${message.page})`);
+                
+                // Store transactions in database
+                    if (txCount > 0) {
+                        console.log(`[MAIN] Storing ${txCount} transactions in database for ${message.address}`);
+                    
+                    // Debug output for transactions
+                        const logLimit = Math.min(3, txCount);
+                    console.log(`[MAIN] First ${logLimit} transactions to store:`);
+                    
+                    for (let i = 0; i < logLimit; i++) {
+                        const tx = message.transactions[i];
+                        console.log(`[MAIN] TX #${i+1}: Hash=${tx.hash.substring(0, 10)}... | From=${tx.from.substring(0, 10)}... | To=${tx.to ? tx.to.substring(0, 10) : 'null'}... | Value=${tx.value} ETH`);
+                    }
+                    
+                    const session = neo4jDriver.session();
+                    try {
+                        let successCount = 0;
+                            
+                            // Process transactions in batches to avoid overwhelming the database
+                            const BATCH_SIZE = 50;
+                            for (let i = 0; i < txCount; i += BATCH_SIZE) {
+                                const batch = message.transactions.slice(i, i + BATCH_SIZE);
+                                console.log(`[MAIN] Processing batch ${Math.floor(i/BATCH_SIZE) + 1}/${Math.ceil(txCount/BATCH_SIZE)} (${batch.length} transactions)`);
+                                
+                                try {
+                                    // Create a batch of transactions
+                                    for (const tx of batch) {
+                            try {
+                                // Create nodes for addresses if they don't exist
+                                await session.run(
+                                    `MERGE (from:Address {address: $fromAddress})
+                                     MERGE (to:Address {address: $toAddress})`,
+                                    {
+                                        fromAddress: tx.from,
+                                        toAddress: tx.to
+                                    }
+                                );
+
+                                // Create the transaction relationship
+                                await session.run(
+                                    `MATCH (from:Address {address: $fromAddress})
+                                     MATCH (to:Address {address: $toAddress})
+                                                 MERGE (from)-[r:HAS_TRANSACTION {hash: $hash}]->(to)
+                                     SET r = $txData`,
+                                    {
+                                        fromAddress: tx.from,
+                                        toAddress: tx.to,
+                                                    hash: tx.hash,
+                                        txData: {
+                                            hash: tx.hash,
+                                            value: tx.value,
+                                            timeStamp: tx.timeStamp,
+                                            gasPrice: tx.gasPrice,
+                                            gasUsed: tx.gasUsed,
+                                            functionName: tx.functionName || "",
+                                            blockNumber: tx.blockNumber,
+                                            type: tx.from.toLowerCase() === message.address.toLowerCase() ? "out" : "in"
+                                        }
+                                    }
+                                );
+                                successCount++;
+                            } catch (txError) {
+                                console.error(`[MAIN] Error storing transaction ${tx.hash}: ${txError.message}`);
+                                        }
+                                    }
+                                } catch (batchError) {
+                                    console.error(`[MAIN] Error processing batch: ${batchError.message}`);
+                            }
+                        }
+                        
+                        // Update the address node with new transaction count
+                        await session.run(
+                            `MATCH (a:Address {address: $address})
+                             SET a.transactionCount = a.transactionCount + $newCount,
+                                     a.lastUpdated = datetime(),
+                                     a.lastProcessedPage = $page`,
+                            {
+                                address: message.address,
+                                    newCount: successCount,
+                                    page: message.page
+                            }
+                        );
+                        
+                            console.log(`[MAIN] Successfully stored ${successCount}/${txCount} transactions in database (page ${message.page})`);
+                    } catch (dbError) {
+                        console.error(`[MAIN] Database error: ${dbError.message}`);
+                    } finally {
+                        await session.close();
+                    }
+                }
+                
+                // If there are more pages to fetch, queue the next page
+                if (message.hasMoreTransactions) {
+                    console.log(`[MAIN] Queueing next page (${message.nextPage}) for address ${message.address}`);
+                        queueTransactionFetch(message.address, message.nextPage, message.offset);
+                } else {
+                        console.log(`[MAIN] All transactions fetched for address ${message.address} (completed at page ${message.page})`);
+                        
+                        // Update the address node to mark fetching as complete
+                        const session = neo4jDriver.session();
+                        try {
+                            await session.run(
+                                `MATCH (a:Address {address: $address})
+                                 SET a.fetchComplete = true,
+                                     a.fetchCompletedAt = datetime()`,
+                                { address: message.address }
+                            );
+                        } catch (error) {
+                            console.error(`[MAIN] Error updating fetch status: ${error.message}`);
+                        } finally {
+                            await session.close();
+                        }
+                }
+            }
+        } catch (error) {
+            console.error(`[MAIN] Error processing worker message: ${error.message}`);
+        } finally {
+            // Clean up worker
+            worker.terminate();
+            workerPool[workerIndex] = null;
+            activeWorkers--;
+            console.log(`[MAIN] Worker ${workerIndex} terminated. Active workers: ${activeWorkers}, Queue length: ${workerQueue.length}`);
+            
+            // Process next task in queue
+            processWorkerQueue();
+        }
+    });
+
+    worker.on('error', (err) => {
+        console.error(`[MAIN] Worker ${workerIndex} error: ${err.message}`);
+        worker.terminate();
+        workerPool[workerIndex] = null;
+        activeWorkers--;
+        processWorkerQueue();
+    });
+
+    worker.on('exit', (code) => {
+        if (code !== 0) {
+            console.error(`[MAIN] Worker ${workerIndex} exited with code ${code}`);
+        }
+        workerPool[workerIndex] = null;
+        activeWorkers--;
+        processWorkerQueue();
+    });
+    }
+}
+
+// Function to queue a transaction fetch task with better prioritization
+function queueTransactionFetch(address, page = 2, offset = 100) {
+    // For very large transaction histories, gradually increase the offset
+    // to fetch more transactions per request as we go deeper
+    let adjustedOffset = offset;
+    if (page > 10) adjustedOffset = 200;
+    if (page > 50) adjustedOffset = 500;
+    
+    const task = {
+        task: 'fetchTransactions',
+        address: address,
+        page: page,
+        offset: adjustedOffset,
+        apiKey: ETHERSCAN_API_KEY,
+        apiUrl: ETHERSCAN_API_URL
+    };
+    
+    // Add task to queue
+    workerQueue.push(task);
+    
+    console.log(`[MAIN] Queued fetch for ${address}, page ${page}, offset ${adjustedOffset} (queue length: ${workerQueue.length})`);
+    
+    // Process queue
+    processWorkerQueue();
+}
+
+// Add a function to check for and resume incomplete fetches on server start
+async function checkIncompleteTransactionFetches() {
+    try {
+        console.log("[MAIN] Checking for incomplete transaction fetches...");
+        const session = neo4jDriver.session();
+        
+        try {
+            // Find addresses that don't have fetchComplete set to true
+            const result = await session.run(
+                `MATCH (a:Address)
+                 WHERE a.fetchComplete IS NULL OR a.fetchComplete = false
+                 RETURN a.address as address, a.lastProcessedPage as lastPage`
+            );
+            
+            const incompleteAddresses = result.records.map(record => ({
+                address: record.get('address'),
+                lastPage: record.get('lastPage') ? parseInt(record.get('lastPage')) : 1
+            }));
+            
+            if (incompleteAddresses.length > 0) {
+                console.log(`[MAIN] Found ${incompleteAddresses.length} addresses with incomplete transaction fetches`);
+                
+                // Queue up to continue fetching for each address
+                for (const item of incompleteAddresses) {
+                    console.log(`[MAIN] Resuming fetch for ${item.address} from page ${item.lastPage + 1}`);
+                    queueTransactionFetch(item.address, item.lastPage + 1);
+                }
+            } else {
+                console.log("[MAIN] No incomplete transaction fetches found");
+            }
+        } finally {
+            await session.close();
+        }
+    } catch (error) {
+        console.error(`[MAIN] Error checking incomplete fetches: ${error.message}`);
+    }
+}
+
+// Call this after initializing the worker pool
+setTimeout(checkIncompleteTransactionFetches, 5000); // Wait 5 seconds after server start
+
+// Modify the getEtherscanData function to track fetch status
 async function getEtherscanData(address, page = 1, offset = 10) {
     try {
+        // Check if we already have data for this address
+        const session = neo4jDriver.session();
+        let existingData = null;
+        
+        try {
+            const result = await session.run(
+                `MATCH (a:Address {address: $address})
+                 RETURN a.fetchComplete as fetchComplete, 
+                        a.transactionCount as txCount,
+                        a.balance as balance`,
+                { address: address.toLowerCase() }
+            );
+            
+            if (result.records.length > 0) {
+                const record = result.records[0];
+                const fetchComplete = record.get('fetchComplete');
+                
+                if (fetchComplete === true) {
+                    console.log(`[MAIN] Using cached data for ${address} (fetch already complete)`);
+                    
+                    // Get the most recent transactions
+                    const txResult = await session.run(
+                        `MATCH (a:Address {address: $address})-[r:HAS_TRANSACTION]-(other)
+                         RETURN r, other.address as otherAddress
+                         ORDER BY r.timeStamp DESC
+                         LIMIT $limit`,
+                        { address: address.toLowerCase(), limit: offset }
+                    );
+                    
+                    const transactions = txResult.records.map(record => {
+                        const r = record.get('r');
+                        const otherAddress = record.get('otherAddress');
+                        const props = r.properties;
+                        
+                        return {
+                            hash: props.hash,
+                            from: r.start.properties.address === address.toLowerCase() ? address.toLowerCase() : otherAddress,
+                            to: r.end.properties.address === address.toLowerCase() ? address.toLowerCase() : otherAddress,
+                            value: props.value,
+                            timeStamp: props.timeStamp,
+                            gasPrice: props.gasPrice,
+                            gasUsed: props.gasUsed,
+                            blockNumber: props.blockNumber,
+                            isError: props.isError === "1"
+                        };
+                    });
+                    
+                    existingData = {
+                        address,
+                        balance: record.get('balance') || "0.000000",
+                        transactionCount: parseInt(record.get('txCount') || "0"),
+                        recentTransactions: transactions,
+                        hasMoreTransactions: false,
+                        fetchComplete: true
+                    };
+                }
+            }
+        } finally {
+            await session.close();
+        }
+        
+        // If we have complete data, return it
+        if (existingData && existingData.fetchComplete) {
+            return existingData;
+        }
+        
+        // Otherwise, fetch from Etherscan
         // Get balance with retry mechanism
         let balanceResponse;
         let retries = 3;
@@ -303,23 +636,33 @@ async function getEtherscanData(address, page = 1, offset = 10) {
                       from: tx.from,
                       to: tx.to,
                       value: (parseFloat(tx.value) / 1e18).toFixed(6),
-                      timestamp: new Date(
-                          parseInt(tx.timeStamp) * 1000
-                      ).toISOString(),
+                      timeStamp: tx.timeStamp,
                       gasPrice: tx.gasPrice,
                       gasUsed: tx.gasUsed,
                       isError: tx.isError === "1",
+                      blockNumber: tx.blockNumber
                   }))
                 : [];
+
+        // Check if there are more transactions to fetch
+        const hasMoreTransactions = transactions.length === offset;
+        
+        // Queue background fetching of additional transactions starting from page 2
+        if (hasMoreTransactions && page === 1) {
+            console.log(`[MAIN] Queueing background fetch for more transactions of address ${address}`);
+            queueTransactionFetch(address);
+        }
 
         return {
             address,
             balance,
             transactionCount: transactions.length,
             recentTransactions: transactions,
+            hasMoreTransactions,
+            page
         };
     } catch (error) {
-        console.error("Etherscan API Error:", error.message);
+        console.error(`[MAIN] Etherscan API Error: ${error.message}`);
         throw new Error(`Failed to fetch wallet data: ${error.message}`);
     }
 }
@@ -363,6 +706,7 @@ async function getMarketData() {
     }
 }
 
+// Modify the wallet endpoint to handle the initial fetch
 app.get("/api/wallet/:address", async (req, res) => {
     const { address } = req.params;
 
@@ -377,7 +721,7 @@ app.get("/api/wallet/:address", async (req, res) => {
             throw new Error("Database connection not available");
         }
 
-        // Get wallet data from Etherscan
+        // Get wallet data from Etherscan (first 10 transactions)
         const walletData = await getEtherscanData(address);
 
         const session = neo4jDriver.session();
@@ -386,7 +730,8 @@ app.get("/api/wallet/:address", async (req, res) => {
             await session.run(
                 `MERGE (w:Address {address: $address})
                  SET w.balance = $balance,
-                     w.transactionCount = $transactionCount`,
+                     w.transactionCount = $transactionCount,
+                     w.lastUpdated = datetime()`,
                 {
                     address: walletData.address,
                     balance: walletData.balance,
@@ -397,28 +742,12 @@ app.get("/api/wallet/:address", async (req, res) => {
             // Process each transaction
             for (const tx of walletData.recentTransactions) {
                 // Ensure both addresses exist
-
-                console.log(
-                    "balace:",
-                    (await getEtherscanData(tx.from)).balance
-                );
-
                 await session.run(
                     `MERGE (from:Address {address: $fromAddress})
-                     ON CREATE SET from.transactionCount = "$fromTransactionCount", from.balance = "$fromBalance"
-                     MERGE (to:Address {address: $toAddress})
-                     ON CREATE SET to.transactionCount = "$toTransactionCount", to.balance = "$toBalance"`,
+                     MERGE (to:Address {address: $toAddress})`,
                     {
                         fromAddress: tx.from,
-                        // fromTransactionCount: getEtherscanData(tx.from, 1, 0).transactionCount,
-                        // fromBalance: getEtherscanData(tx.from, 1, 0).balance,
-                        fromTransactionCount: 100,
-                        fromBalance: 100,
-                        toAddress: tx.to,
-                        // toTransactionCount: getEtherscanData(tx.to, 1, 0).transactionCount,
-                        // toBalance: getEtherscanData(tx.to, 1, 0).balance,
-                        toTransactionCount: 100,
-                        toBalance: 100,
+                        toAddress: tx.to
                     }
                 );
 
@@ -470,21 +799,15 @@ app.get("/api/wallet/:address", async (req, res) => {
                 }
             }
 
-            // delete lonely nodes
-            await session.run(
-                `
-                MATCH (a:Address)
-                 WHERE NOT (a)-[:HAS_TRANSACTION]-() 
-                 DETACH DELETE a;
-                `
-            );
-
-            // Return the same response format
+            // Return the same response format with additional info about background processing
             return res.json({
                 address: walletData.address,
                 balance: walletData.balance,
                 transactionCount: walletData.transactionCount,
                 recentTransactions: walletData.recentTransactions,
+                backgroundFetchStatus: walletData.hasMoreTransactions ? 
+                    "Additional transactions are being fetched in the background" : 
+                    "All transactions have been fetched"
             });
         } finally {
             await session.close();
@@ -1417,6 +1740,26 @@ app.get("/api/report-file/:contractId", async (req, res) => {
         console.error("Error reading report file:", error);
         res.status(500).json({ error: "Failed to read report file" });
     }
+});
+
+// Add a debug endpoint to check worker status
+app.get("/api/debug/workers", (req, res) => {
+    const workerStatus = {
+        maxWorkers: MAX_WORKERS,
+        activeWorkers: activeWorkers,
+        queueLength: workerQueue.length,
+        workerPool: workerPool.map((worker, index) => ({
+            index,
+            active: worker !== null
+        })),
+        queuePreview: workerQueue.slice(0, 5).map(task => ({
+            address: task.address,
+            page: task.page,
+            offset: task.offset
+        }))
+    };
+    
+    res.json(workerStatus);
 });
 
 // Error handling middleware
