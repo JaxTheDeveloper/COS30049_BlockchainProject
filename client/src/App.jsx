@@ -1,10 +1,10 @@
 import { useState } from 'react';
-import { 
-  CssBaseline, 
-  Box, 
-  ThemeProvider, 
+import {
+  CssBaseline,
+  Box,
+  ThemeProvider,
   createTheme,
-  Container 
+  Container
 } from '@mui/material';
 import NavBar from './components/NavBar';
 import Header from './components/Header';
@@ -81,10 +81,10 @@ function App() {
         <Box sx={{ width: '100%' }}>
           <NavBar onSearch={handleSearch} />
         </Box>
-        
-        <Container 
-          maxWidth={false} 
-          sx={{ 
+
+        <Container
+          maxWidth={false}
+          sx={{
             width: '100%',
             maxWidth: '1400px !important',
             px: { xs: 2, sm: 3 }
@@ -95,7 +95,7 @@ function App() {
             <WalletInfo loading={loading} error={error} walletData={walletData} marketData={marketData} />
           </Box>
         </Container>
-        
+
         <Box sx={{ width: '100%', mt: 'auto' }}>
           <Footer />
         </Box>
