@@ -26,19 +26,8 @@ const ETHERSCAN_API_URL = "https://api.etherscan.io/api";
 // get coingecko api url
 const COINGECKO_API_URL = "https://api.coingecko.com/api/v3";
 
-// Configure multer for file uploads
-const storage = multer.diskStorage({
-    destination: function (req, file, cb) {
-        const uploadDir = path.join(__dirname, "uploads");
-        if (!fs.existsSync(uploadDir)) {
-            fs.mkdirSync(uploadDir, { recursive: true });
-        }
-        cb(null, uploadDir);
-    },
-    filename: function (req, file, cb) {
-        cb(null, Date.now() + "-" + file.originalname);
-    },
-});
+// Use memory storage instead of disk storage
+const storage = multer.memoryStorage();
 
 const upload = multer({
     storage: storage,
@@ -1088,7 +1077,7 @@ app.get("/api/debug/graph/:address", async (req, res) => {
     }
 });
 
-// handling contract uploads
+// Then modify the upload-contract endpoint to handle in-memory files
 app.post(
     "/api/upload-contract",
     upload.single("contract"),
@@ -1106,30 +1095,38 @@ app.post(
                     .json({ error: "Contract name is required" });
             }
 
+            // Get the contract content from memory
+            const fileContent = req.file.buffer.toString('utf8');
+            
             // Calculate SHA256 hash of the contract contents
-            const fileContent = fs.readFileSync(req.file.path, "utf8");
             const hash = crypto
                 .createHash("sha256")
                 .update(fileContent)
                 .digest("hex");
 
+            // Create a temporary file path for Slither analysis
+            const tempFilePath = path.join(os.tmpdir(), `${Date.now()}-${req.file.originalname}`);
+            
+            // Write the file content to the temporary file
+            fs.writeFileSync(tempFilePath, fileContent);
+
             // Insert contract info into MySQL
             const [result] = await mysqlPool.query(
                 `INSERT INTO contracts (name, address, filename, filepath, contract_hashcode, status) 
-             VALUES (?, ?, ?, ?, ?, 'pending')`,
+                VALUES (?, ?, ?, ?, ?, 'pending')`,
                 [
                     name,
                     address || null,
                     req.file.originalname,
-                    req.file.path,
+                    tempFilePath, // Use the temporary file path
                     hash,
                 ]
             );
 
             const contractId = result.insertId;
 
-            // Start Slither analysis in the background
-            runSlitherAnalysis(contractId, req.file.path);
+            // Start Slither analysis in the background using the temporary file
+            runSlitherAnalysis(contractId, tempFilePath, true); // Pass true to indicate it's a temp file
 
             res.status(201).json({
                 message: "Contract uploaded successfully",
@@ -1144,8 +1141,8 @@ app.post(
     }
 );
 
-// Function to run Slither analysis with timeout
-async function runSlitherAnalysis(contractId, filePath) {
+// Modify the runSlitherAnalysis function to handle temporary files
+async function runSlitherAnalysis(contractId, filePath, isTemporary = false) {
     // Set a timeout for the entire analysis process (2 minutes)
     const analysisTimeout = setTimeout(async () => {
         console.error(
@@ -1182,6 +1179,11 @@ async function runSlitherAnalysis(contractId, filePath) {
                         }),
                     ]
                 );
+            }
+            
+            // Clean up temporary file if needed
+            if (isTemporary && fs.existsSync(filePath)) {
+                fs.unlinkSync(filePath);
             }
         } catch (error) {
             console.error(
@@ -1290,6 +1292,12 @@ async function runSlitherAnalysis(contractId, filePath) {
 
         console.log(`Analysis completed for contract ID ${contractId}`);
 
+        // Clean up the temporary file if needed
+        if (isTemporary && fs.existsSync(filePath)) {
+            fs.unlinkSync(filePath);
+            console.log(`Temporary file ${filePath} deleted`);
+        }
+
         // Clear the timeout since we completed successfully
         clearTimeout(analysisTimeout);
     } catch (error) {
@@ -1322,6 +1330,12 @@ async function runSlitherAnalysis(contractId, filePath) {
             );
         } catch (dbError) {
             console.error("Failed to store analysis error:", dbError);
+        }
+
+        // Clean up the temporary file if needed
+        if (isTemporary && fs.existsSync(filePath)) {
+            fs.unlinkSync(filePath);
+            console.log(`Temporary file ${filePath} deleted after error`);
         }
 
         // Clear the timeout since we've handled the error
