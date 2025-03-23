@@ -821,6 +821,10 @@ app.post(
     }
 );
 
+app.post("/api/upload-contract", async (req, res) => {
+    //
+});
+
 // Function to run Slither analysis with timeout
 async function runSlitherAnalysis(contractId, filePath) {
     // Set a timeout for the entire analysis process (2 minutes)
