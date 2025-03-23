@@ -18,7 +18,8 @@ import {
   Alert,
   Button,
   Stack,
-  TablePagination
+  TablePagination,
+  Container
 } from '@mui/material';
 import { useNavigate } from 'react-router-dom';
 import VisibilityIcon from '@mui/icons-material/Visibility';
@@ -144,6 +145,30 @@ function ContractHistory() {
     }
   };
 
+  const formatVulnerabilityCount = (vulnerabilities) => {
+    if (!vulnerabilities || !Array.isArray(vulnerabilities)) return [];
+    
+    const counts = {
+      high: 0,
+      medium: 0,
+      low: 0
+    };
+
+    vulnerabilities.forEach(vuln => {
+      const severity = vuln.severity.toLowerCase();
+      if (counts.hasOwnProperty(severity)) {
+        counts[severity]++;
+      }
+    });
+
+    return Object.entries(counts)
+      .filter(([_, count]) => count > 0)
+      .map(([severity, count]) => ({
+        severity: severity.charAt(0).toUpperCase() + severity.slice(1),
+        count
+      }));
+  };
+
   const handleChangePage = (event, newPage) => {
     setPage(newPage);
   };
@@ -170,7 +195,7 @@ function ContractHistory() {
   }
 
   return (
-    <Box>
+    <Container maxWidth="xl">
       {/* Page Header */}
       <Box sx={{ mb: 4 }}>
         <Typography variant="h5" sx={{ color: '#1e2022', fontWeight: 600, mb: 1 }}>
@@ -333,11 +358,11 @@ function ContractHistory() {
                   </TableCell>
                   <TableCell>
                     <Stack direction="row" spacing={1}>
-                      {contract.vulnerabilities?.map((vuln, index) => (
+                      {formatVulnerabilityCount(contract.vulnerabilities).map((vuln, index) => (
                         <Chip
-                          key={`${contract.id}-${index}`}
+                          key={`${contract.id}-${vuln.severity}`}
                           icon={<SecurityIcon sx={{ fontSize: 16 }} />}
-                          label={vuln.severity}
+                          label={`${vuln.severity} (${vuln.count})`}
                           color={getSeverityColor(vuln.severity)}
                           size="small"
                           sx={{ 
@@ -398,7 +423,7 @@ function ContractHistory() {
           />
         </Box>
       </TableContainer>
-    </Box>
+    </Container>
   );
 }
 

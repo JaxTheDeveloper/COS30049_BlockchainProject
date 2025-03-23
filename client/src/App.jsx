@@ -49,6 +49,44 @@ function AppContent() {
   const [contractLoading, setContractLoading] = useState(false);
   const location = useLocation();
 
+  // Add effect to handle contract route
+  useEffect(() => {
+    const fetchContractData = async (contractId) => {
+      try {
+        console.log('[DEBUG] Fetching contract data for ID:', contractId);
+        setContractLoading(true);
+        setError(null);
+        
+        const response = await fetch(`http://localhost:5000/api/contract/${contractId}/report`);
+        const data = await response.json();
+        
+        if (!response.ok) {
+          throw new Error(data.error || 'Failed to fetch contract data');
+        }
+        
+        console.log('[DEBUG] Received contract data:', data);
+        setContractData(data);
+      } catch (err) {
+        console.error('[DEBUG] Error fetching contract data:', err);
+        setError(err.message);
+      } finally {
+        setContractLoading(false);
+      }
+    };
+
+    // Check if we're on a contract route
+    const match = location.pathname.match(/\/contract\/(\d+)/);
+    if (match) {
+      const contractId = match[1];
+      console.log('[DEBUG] Contract route detected, ID:', contractId);
+      fetchContractData(contractId);
+    } else {
+      // Reset contract data when not on contract route
+      setContractData(null);
+      setContractLoading(false);
+    }
+  }, [location.pathname]);
+
   useEffect(() => {
     const fetchMarketData = async () => {
       try {
@@ -105,21 +143,21 @@ function AppContent() {
       setContractLoading(true);
       setContractData(null);
       
-      // Fetch contract data
-      const response = await fetch(`http://localhost:5000/api/contract/${contractId}`);
+      // Fetch contract data using the report endpoint
+      const response = await fetch(`http://localhost:5000/api/contract/${contractId}/report`);
       const data = await response.json();
       
       if (!response.ok) {
         throw new Error(data.error || 'Failed to fetch contract data');
       }
       
-      console.log('Received contract data:', data);
+      console.log('[DEBUG] Contract analysis data:', data);
       setContractData(data);
       
       // Reset wallet data when viewing contract analysis
       setWalletData(null);
     } catch (err) {
-      console.error('Contract analysis error:', err);
+      console.error('[DEBUG] Contract analysis error:', err);
       setError(err.message || 'Error analyzing contract');
     } finally {
       setContractLoading(false);
