@@ -99,8 +99,8 @@ async function initializeMySQLTables() {
                 filename VARCHAR(255) NOT NULL,
                 filepath VARCHAR(255) NOT NULL,
                 contract_hashcode VARCHAR(64),
-                upload_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                status ENUM('pending', 'analyzing', 'completed', 'failed') DEFAULT 'pending'
+                status ENUM('pending', 'analyzing', 'completed', 'failed') DEFAULT 'pending',
+                upload_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         `);
 
@@ -109,19 +109,32 @@ async function initializeMySQLTables() {
             CREATE TABLE IF NOT EXISTS analysis_reports (
                 id INT AUTO_INCREMENT PRIMARY KEY,
                 contract_id INT NOT NULL,
-                report_json JSON,
+                report_json LONGTEXT NOT NULL,
                 vulnerability_count INT DEFAULT 0,
                 high_severity_count INT DEFAULT 0,
                 medium_severity_count INT DEFAULT 0,
                 low_severity_count INT DEFAULT 0,
                 completion_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (contract_id) REFERENCES contracts(id)
+                FOREIGN KEY (contract_id) REFERENCES contracts(id) ON DELETE CASCADE
+            )
+        `);
+
+        // Create AI recommendations table
+        await mysqlPool.query(`
+            CREATE TABLE IF NOT EXISTS ai_recommendations (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                report_id INT NOT NULL,
+                contract_id INT NOT NULL,
+                recommendation TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (report_id) REFERENCES analysis_reports(id) ON DELETE CASCADE,
+                FOREIGN KEY (contract_id) REFERENCES contracts(id) ON DELETE CASCADE
             )
         `);
 
         console.log("MySQL tables initialized successfully");
-    } catch (error) {
-        console.error("Error initializing MySQL tables:", error);
+    } catch (err) {
+        console.error("Error initializing MySQL tables:", err);
     }
 }
 
@@ -1774,6 +1787,176 @@ app.get("/api/debug/workers", (req, res) => {
     };
     
     res.json(workerStatus);
+});
+
+// Add Ollama integration for AI analysis
+const analyzeContractWithAI = async (reportData, contractCode) => {
+    try {
+        console.log("Analyzing contract with Ollama...");
+        
+        // Prepare a structured prompt for Ollama
+        const prompt = `You are a blockchain security expert. Analyze this smart contract and Slither report:
+        
+CONTRACT CODE:
+${contractCode}
+
+SLITHER ANALYSIS REPORT:
+${JSON.stringify(reportData, null, 2)}
+
+Based on the Slither analysis and your expertise in blockchain security, provide:
+1. An overall security assessment of this smart contract
+2. Risk categorization (High, Medium, Low)
+3. The most critical vulnerabilities to fix
+4. Recommendations for developers to improve the contract
+5. Potential impacts to users if these issues aren't fixed
+
+Format your response as a security report that would be helpful for blockchain developers and users evaluating this contract.`;
+
+        // Call Ollama API
+        const response = await fetch('http://localhost:11434/api/generate', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+                model: 'deepseek',
+                prompt: prompt,
+                stream: false,
+                options: {
+                    temperature: 0.1,
+                    num_predict: 2048,
+                }
+            }),
+        });
+
+        const data = await response.json();
+        
+        if (!data.response) {
+            throw new Error('No response from Ollama');
+        }
+        
+        return data.response;
+    } catch (error) {
+        console.error('Error analyzing contract with AI:', error);
+        return `Unable to generate AI analysis: ${error.message}`;
+    }
+};
+
+// Get detailed contract info by ID, including analysis
+app.get("/api/contract/:contractId", async (req, res) => {
+    try {
+        const { contractId } = req.params;
+
+        // Get contract details
+        const [contracts] = await mysqlPool.query(
+            `SELECT c.* FROM contracts c WHERE c.id = ?`,
+            [contractId]
+        );
+
+        if (contracts.length === 0) {
+            return res.status(404).json({ error: "Contract not found" });
+        }
+
+        const contract = contracts[0];
+
+        // Read the contract source code
+        let sourceCode = '';
+        try {
+            if (fs.existsSync(contract.filepath)) {
+                sourceCode = fs.readFileSync(contract.filepath, 'utf8');
+            } else {
+                console.warn(`Contract file not found: ${contract.filepath}`);
+            }
+        } catch (readError) {
+            console.error(`Error reading contract file: ${readError.message}`);
+        }
+
+        // Get analysis report
+        const [reports] = await mysqlPool.query(
+            `SELECT * FROM analysis_reports WHERE contract_id = ?`,
+            [contractId]
+        );
+
+        let analysisData = null;
+        let aiRecommendation = null;
+
+        if (reports.length > 0) {
+            const report = reports[0];
+            const reportJson = JSON.parse(report.report_json);
+
+            // Check if there's an error in the report
+            if (reportJson.error) {
+                analysisData = {
+                    error: reportJson.error,
+                    vulnerabilitySummary: {
+                        total: 0,
+                        highSeverity: 0,
+                        mediumSeverity: 0,
+                        lowSeverity: 0
+                    },
+                    findings: []
+                };
+            } else {
+                // Format the analysis data
+                analysisData = {
+                    vulnerabilitySummary: {
+                        total: report.vulnerability_count,
+                        highSeverity: report.high_severity_count,
+                        mediumSeverity: report.medium_severity_count,
+                        lowSeverity: report.low_severity_count
+                    },
+                    findings: reportJson.results?.detectors?.map(finding => ({
+                        name: finding.check,
+                        description: finding.description,
+                        impact: finding.impact,
+                        confidence: finding.confidence,
+                        elements: finding.elements
+                    })) || []
+                };
+
+                // Check if AI recommendation already exists
+                const [aiRecs] = await mysqlPool.query(
+                    `SELECT recommendation FROM ai_recommendations WHERE report_id = ?`,
+                    [report.id]
+                );
+
+                if (aiRecs.length > 0) {
+                    aiRecommendation = aiRecs[0].recommendation;
+                } else {
+                    // Generate new AI recommendation using Ollama
+                    aiRecommendation = await analyzeContractWithAI(reportJson, sourceCode);
+                    
+                    // Store the AI recommendation
+                    try {
+                        await mysqlPool.query(
+                            `INSERT INTO ai_recommendations (report_id, contract_id, recommendation) VALUES (?, ?, ?)`,
+                            [report.id, contractId, aiRecommendation]
+                        );
+                    } catch (dbError) {
+                        console.error(`Error storing AI recommendation: ${dbError.message}`);
+                    }
+                }
+            }
+        }
+
+        // Format response
+        const response = {
+            id: contract.id,
+            name: contract.name,
+            address: contract.address,
+            filename: contract.filename,
+            uploadDate: contract.upload_date,
+            status: contract.status,
+            sourceCode: sourceCode,
+            analysis: analysisData,
+            aiRecommendation: aiRecommendation
+        };
+
+        res.json(response);
+    } catch (error) {
+        console.error("Error retrieving contract:", error);
+        res.status(500).json({ error: "Failed to retrieve contract" });
+    }
 });
 
 // Error handling middleware

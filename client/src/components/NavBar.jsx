@@ -30,7 +30,7 @@ import HelpOutlineIcon from '@mui/icons-material/HelpOutline';
 import UploadFileIcon from '@mui/icons-material/UploadFile';
 import CodeIcon from '@mui/icons-material/Code';
 
-function NavBar({ onSearch }) {
+function NavBar({ onSearch, onContractAnalysisComplete }) {
   const [searchValue, setSearchValue] = useState('');
   const [filter, setFilter] = useState('all');
   const [openUploadDialog, setOpenUploadDialog] = useState(false);
@@ -109,6 +109,11 @@ function NavBar({ onSearch }) {
         message: `Contract uploaded successfully! ID: ${data.contractId}`,
         severity: 'success'
       });
+      
+      // Pass the contract ID to the parent component
+      if (onContractAnalysisComplete && data.contractId) {
+        onContractAnalysisComplete(data.contractId);
+      }
       
       // Reset form
       setOpenUploadDialog(false);
