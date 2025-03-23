@@ -21,7 +21,11 @@ import {
   TextField as MuiTextField,
   CircularProgress,
   Snackbar,
-  Alert
+  Alert,
+  Tabs,
+  Tab,
+  Card,
+  CardContent
 } from '@mui/material';
 import SearchIcon from '@mui/icons-material/Search';
 import AccountBalanceWalletIcon from '@mui/icons-material/AccountBalanceWallet';
@@ -29,6 +33,7 @@ import LanguageIcon from '@mui/icons-material/Language';
 import HelpOutlineIcon from '@mui/icons-material/HelpOutline';
 import UploadFileIcon from '@mui/icons-material/UploadFile';
 import CodeIcon from '@mui/icons-material/Code';
+import CloseIcon from '@mui/icons-material/Close';
 
 function NavBar({ onSearch, onContractAnalysisComplete }) {
   const [searchValue, setSearchValue] = useState('');
@@ -43,6 +48,7 @@ function NavBar({ onSearch, onContractAnalysisComplete }) {
     message: '',
     severity: 'info'
   });
+  const [uploadTab, setUploadTab] = useState(0);
 
   const handleSubmit = (e) => {
     e.preventDefault();
@@ -64,16 +70,14 @@ function NavBar({ onSearch, onContractAnalysisComplete }) {
     }
   };
 
-  const handleUploadContract = async () => {
-    if (!selectedFile) {
-      setSnackbar({
-        open: true,
-        message: 'Please select a file to upload',
-        severity: 'error'
-      });
-      return;
-    }
+  const handleTabChange = (event, newValue) => {
+    setUploadTab(newValue);
+    // Reset form when switching tabs
+    setSelectedFile(null);
+    setContractAddress('');
+  };
 
+  const handleUploadContract = async () => {
     if (!contractName.trim()) {
       setSnackbar({
         open: true,
@@ -83,14 +87,36 @@ function NavBar({ onSearch, onContractAnalysisComplete }) {
       return;
     }
 
+    // Check if we have either a file or an address based on the active tab
+    if (uploadTab === 0 && !selectedFile) {
+      setSnackbar({
+        open: true,
+        message: 'Please select a file to upload',
+        severity: 'error'
+      });
+      return;
+    }
+
+    if (uploadTab === 1 && !contractAddress.trim()) {
+      setSnackbar({
+        open: true,
+        message: 'Please enter a contract address',
+        severity: 'error'
+      });
+      return;
+    }
+
     try {
       setUploading(true);
       
       const formData = new FormData();
-      formData.append('contract', selectedFile);
       formData.append('name', contractName);
-      if (contractAddress.trim()) {
-        formData.append('address', contractAddress);
+
+      // Append either file or address based on active tab
+      if (uploadTab === 0) {
+        formData.append('contract', selectedFile);
+      } else {
+        formData.append('address', contractAddress.trim());
       }
 
       const response = await fetch('http://localhost:5000/api/upload-contract', {
@@ -305,59 +331,247 @@ function NavBar({ onSearch, onContractAnalysisComplete }) {
         onClose={() => !uploading && setOpenUploadDialog(false)}
         maxWidth="sm"
         fullWidth
+        PaperProps={{
+          sx: {
+            borderRadius: 2,
+            boxShadow: '0 2px 8px rgba(119, 131, 143, 0.1)'
+          }
+        }}
       >
-        <DialogTitle>Upload Smart Contract for Analysis</DialogTitle>
-        <DialogContent>
-          <Box sx={{ mt: 2, display: 'flex', flexDirection: 'column', gap: 3 }}>
-            <MuiTextField
-              label="Contract Name"
-              fullWidth
-              value={contractName}
-              onChange={(e) => setContractName(e.target.value)}
-              required
-              disabled={uploading}
+        <DialogTitle 
+          sx={{ 
+            borderBottom: '1px solid #e7eaf3',
+            px: 3,
+            py: 2,
+            fontSize: '1.1rem',
+            fontWeight: 600,
+            color: '#1e2022',
+            textAlign: 'center',
+            position: 'relative',
+            mb: 0
+          }}
+        >
+          <IconButton
+            aria-label="close"
+            onClick={() => !uploading && setOpenUploadDialog(false)}
+            disabled={uploading}
+            sx={{
+              position: 'absolute',
+              right: 8,
+              top: '50%',
+              transform: 'translateY(-50%)',
+              color: '#77838f',
+              '&:hover': {
+                color: '#3498db',
+                bgcolor: 'transparent'
+              },
+              '&.Mui-disabled': {
+                color: '#c0c6cc'
+              }
+            }}
+          >
+            <CloseIcon />
+          </IconButton>
+          Upload Smart Contract for Analysis
+        </DialogTitle>
+
+        <Box sx={{ 
+          px: 3, 
+          bgcolor: '#f8f9fa',
+          borderBottom: '1px solid #e7eaf3'
+        }}>
+          <Tabs 
+            value={uploadTab} 
+            onChange={handleTabChange}
+            variant="fullWidth"
+            sx={{
+              '& .MuiTab-root': {
+                py: 2,
+                color: '#77838f',
+                fontSize: '0.95rem',
+                textTransform: 'none',
+                '&.Mui-selected': {
+                  color: '#3498db',
+                  fontWeight: 500
+                },
+                '& .MuiSvgIcon-root': {
+                  fontSize: '1.25rem',
+                  mr: 1
+                }
+              },
+              '& .MuiTabs-indicator': {
+                backgroundColor: '#3498db',
+                height: '3px',
+                borderRadius: '3px 3px 0 0'
+              }
+            }}
+          >
+            <Tab 
+              label="Upload File" 
+              icon={<UploadFileIcon />} 
+              iconPosition="start"
             />
-            
-            <MuiTextField
-              label="Contract Address (Optional)"
-              fullWidth
-              value={contractAddress}
-              onChange={(e) => setContractAddress(e.target.value)}
-              placeholder="0x..."
-              disabled={uploading}
+            <Tab 
+              label="Contract Address" 
+              icon={<AccountBalanceWalletIcon />} 
+              iconPosition="start"
             />
-            
-            <Box sx={{ mt: 1 }}>
-              <input
-                accept=".sol"
-                style={{ display: 'none' }}
-                id="contract-file-upload"
-                type="file"
-                onChange={handleFileChange}
+          </Tabs>
+        </Box>
+
+        <DialogContent sx={{ px: 3, py: 3, bgcolor: '#fff' }}>
+          <Box sx={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+            <Box>
+              <Typography 
+                variant="subtitle1" 
+                sx={{ 
+                  mb: 1.5,
+                  color: '#1e2022',
+                  fontWeight: 500,
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 1
+                }}
+              >
+                Contract Name
+              </Typography>
+              <MuiTextField
+                fullWidth
+                value={contractName}
+                onChange={(e) => setContractName(e.target.value)}
+                placeholder="Enter contract name"
+                required
                 disabled={uploading}
+                sx={{
+                  '& .MuiOutlinedInput-root': {
+                    bgcolor: '#fff',
+                    '&:hover .MuiOutlinedInput-notchedOutline': {
+                      borderColor: '#3498db',
+                    }
+                  }
+                }}
               />
-              <label htmlFor="contract-file-upload">
-                <Button
-                  variant="outlined"
-                  component="span"
-                  startIcon={<UploadFileIcon />}
-                  disabled={uploading}
-                >
-                  Select Solidity File
-                </Button>
-              </label>
-              {selectedFile && (
-                <Typography variant="body2" sx={{ mt: 1 }}>
-                  Selected: {selectedFile.name}
-                </Typography>
-              )}
             </Box>
+
+            {uploadTab === 0 && (
+              <Box>
+                <Typography 
+                  variant="subtitle1" 
+                  sx={{ 
+                    mb: 1.5,
+                    color: '#1e2022',
+                    fontWeight: 500,
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 1
+                  }}
+                >
+                  <UploadFileIcon sx={{ color: '#3498db', fontSize: 20 }} />
+                  Upload Solidity Contract File
+                </Typography>
+                <input
+                  accept=".sol"
+                  style={{ display: 'none' }}
+                  id="contract-file-upload"
+                  type="file"
+                  onChange={handleFileChange}
+                  disabled={uploading}
+                />
+                <label htmlFor="contract-file-upload">
+                  <Button
+                    variant="outlined"
+                    component="span"
+                    startIcon={<UploadFileIcon sx={{ color: '#3498db' }} />}
+                    disabled={uploading}
+                    fullWidth
+                    sx={{
+                      color: '#3498db',
+                      borderColor: '#3498db',
+                      bgcolor: 'rgba(52, 152, 219, 0.05)',
+                      '&:hover': {
+                        borderColor: '#2980b9',
+                        bgcolor: 'rgba(52, 152, 219, 0.1)',
+                        color: '#2980b9'
+                      },
+                      py: 1.5,
+                      fontWeight: 500
+                    }}
+                  >
+                    Select Solidity File
+                  </Button>
+                </label>
+                {selectedFile && (
+                  <Typography 
+                    variant="body2" 
+                    sx={{ 
+                      mt: 1.5,
+                      color: '#77838f',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 1
+                    }}
+                  >
+                    <UploadFileIcon sx={{ fontSize: 20 }} />
+                    {selectedFile.name}
+                  </Typography>
+                )}
+              </Box>
+            )}
+
+            {uploadTab === 1 && (
+              <Box>
+                <Typography 
+                  variant="subtitle1" 
+                  sx={{ 
+                    mb: 1.5,
+                    color: '#1e2022',
+                    fontWeight: 500,
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 1
+                  }}
+                >
+                  <AccountBalanceWalletIcon sx={{ color: '#3498db', fontSize: 20 }} />
+                  Enter Contract Address
+                </Typography>
+                <MuiTextField
+                  fullWidth
+                  value={contractAddress}
+                  onChange={(e) => setContractAddress(e.target.value)}
+                  placeholder="0x..."
+                  required
+                  disabled={uploading}
+                  helperText="Enter the deployed contract address"
+                  sx={{
+                    '& .MuiOutlinedInput-root': {
+                      bgcolor: '#fff',
+                      '&:hover .MuiOutlinedInput-notchedOutline': {
+                        borderColor: '#3498db',
+                      }
+                    }
+                  }}
+                />
+              </Box>
+            )}
           </Box>
         </DialogContent>
-        <DialogActions>
+
+        <DialogActions sx={{ 
+          px: 3, 
+          py: 2,
+          borderTop: '1px solid #e7eaf3',
+          bgcolor: '#fff'
+        }}>
           <Button 
             onClick={() => setOpenUploadDialog(false)} 
             disabled={uploading}
+            sx={{
+              color: '#77838f',
+              '&:hover': {
+                bgcolor: 'transparent',
+                color: '#3498db'
+              }
+            }}
           >
             Cancel
           </Button>
@@ -365,8 +579,18 @@ function NavBar({ onSearch, onContractAnalysisComplete }) {
             onClick={handleUploadContract} 
             variant="contained" 
             color="primary"
-            disabled={uploading}
+            disabled={uploading || (uploadTab === 0 && !selectedFile) || (uploadTab === 1 && !contractAddress.trim())}
             startIcon={uploading ? <CircularProgress size={20} /> : null}
+            sx={{
+              bgcolor: '#3498db',
+              '&:hover': {
+                bgcolor: '#2980b9'
+              },
+              '&.Mui-disabled': {
+                bgcolor: '#e7eaf3',
+                color: '#77838f'
+              }
+            }}
           >
             {uploading ? 'Uploading...' : 'Upload & Analyze'}
           </Button>

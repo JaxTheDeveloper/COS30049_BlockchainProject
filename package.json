@@ -1,0 +1,12 @@
+{
+  "name": "test_fe_be",
+  "version": "1.0.0",
+  "description": "Blockchain project with frontend and backend",
+  "scripts": {
+    "start": "concurrently \"cd server && npm run dev\" \"cd client && npm start\"",
+    "install-all": "concurrently \"cd server && npm install\" \"cd client && npm install\""
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  }
+} 

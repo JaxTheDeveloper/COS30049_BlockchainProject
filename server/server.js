@@ -750,16 +750,41 @@ app.get("/api/debug/graph/:address", async (req, res) => {
     }
 });
 
-// Then modify the upload-contract endpoint to handle in-memory files
+// Function to fetch contract source code from Etherscan
+async function fetchContractSource(address) {
+    try {
+        const response = await axios.get(ETHERSCAN_API_URL, {
+            params: {
+                module: "contract",
+                action: "getsourcecode",
+                address: address,
+                apikey: ETHERSCAN_API_KEY,
+            },
+        });
+
+        if (response.data.status !== "1" || !response.data.result[0]) {
+            throw new Error(
+                response.data.message || "Failed to fetch contract source"
+            );
+        }
+        console.log(response.data);
+        const sourceCode = response.data.result[0].SourceCode;
+        if (!sourceCode) {
+            throw new Error("Contract source code not verified on Etherscan");
+        }
+
+        return sourceCode;
+    } catch (error) {
+        throw new Error(`Failed to fetch contract source: ${error.message}`);
+    }
+}
+
+// handling contract uploads
 app.post(
     "/api/upload-contract",
     upload.single("contract"),
     async (req, res) => {
         try {
-            if (!req.file) {
-                return res.status(400).json({ error: "No file uploaded" });
-            }
-
             const { name, address } = req.body;
 
             if (!name) {
@@ -768,29 +793,92 @@ app.post(
                     .json({ error: "Contract name is required" });
             }
 
-            // Calculate SHA256 hash of the contract contents
-            const hash = crypto
-                .createHash("sha256")
-                .update(fileContent)
-                .digest("hex");
+            // Create uploads directory if it doesn't exist
+            const uploadDir = path.join(__dirname, "uploads");
+            if (!fs.existsSync(uploadDir)) {
+                fs.mkdirSync(uploadDir, { recursive: true });
+            }
+
+            let contractSource;
+            let filename;
+            let filepath;
+            let hash;
+
+            // Handle contract upload by address
+            if (address && !req.file) {
+                try {
+                    // Fetch source code from Etherscan
+                    contractSource = await fetchContractSource(address);
+
+                    // Create filename and save to disk
+                    filename = `${Date.now()}-${address}.sol`;
+                    filepath = path.join(uploadDir, filename);
+
+                    // Write source code to file
+                    fs.writeFileSync(filepath, contractSource);
+
+                    // Calculate hash from source code
+                    hash = crypto
+                        .createHash("sha256")
+                        .update(contractSource)
+                        .digest("hex");
+                } catch (error) {
+                    return res.status(400).json({ error: error.message });
+                }
+            }
+            // Handle file upload
+            else if (req.file) {
+                if (!req.file.originalname.endsWith(".sol")) {
+                    return res.status(400).json({
+                        error: "Only Solidity (.sol) files are allowed",
+                    });
+                }
+
+                filename = Date.now() + "-" + req.file.originalname;
+                filepath = path.join(uploadDir, filename);
+
+                // Write the buffer to file
+                fs.writeFileSync(filepath, req.file.buffer);
+
+                // Calculate hash from buffer
+                hash = crypto
+                    .createHash("sha256")
+                    .update(req.file.buffer)
+                    .digest("hex");
+            } else {
+                return res.status(400).json({
+                    error: "Either a contract file or address must be provided",
+                });
+            }
+
+            // Check if contract with same hash exists
+            const [existingContracts] = await mysqlPool.query(
+                "SELECT id FROM contracts WHERE contract_hashcode = ?",
+                [hash]
+            );
+
+            if (existingContracts.length > 0) {
+                // Delete the temporary file
+                if (fs.existsSync(filepath)) {
+                    fs.unlinkSync(filepath);
+                }
+                return res.status(409).json({
+                    error: "Contract with identical source code already exists",
+                    existingContractId: existingContracts[0].id,
+                });
+            }
 
             // Insert contract info into MySQL
             const [result] = await mysqlPool.query(
                 `INSERT INTO contracts (name, address, filename, filepath, contract_hashcode, status) 
                 VALUES (?, ?, ?, ?, ?, 'pending')`,
-                [
-                    name,
-                    address || null,
-                    req.file.originalname,
-                    tempFilePath, // Use the temporary file path
-                    hash,
-                ]
+                [name, address || null, filename, filepath, hash]
             );
 
             const contractId = result.insertId;
 
-            // Start Slither analysis in the background using the temporary file
-            runSlitherAnalysis(contractId, tempFilePath, true); // Pass true to indicate it's a temp file
+            // Start Slither analysis in the background
+            runSlitherAnalysis(contractId, filepath);
 
             res.status(201).json({
                 message: "Contract uploaded successfully",
@@ -804,10 +892,6 @@ app.post(
         }
     }
 );
-
-app.post("/api/upload-contract", async (req, res) => {
-    //
-});
 
 // Function to run Slither analysis with timeout
 async function runSlitherAnalysis(contractId, filePath) {
@@ -956,7 +1040,7 @@ async function runSlitherAnalysis(contractId, filePath) {
         console.log(`Analysis completed for contract ID ${contractId}`);
 
         // Clean up the temporary file if needed
-        if (isTemporary && fs.existsSync(filePath)) {
+        if (fs.existsSync(filePath)) {
             fs.unlinkSync(filePath);
             console.log(`Temporary file ${filePath} deleted`);
         }
@@ -996,7 +1080,7 @@ async function runSlitherAnalysis(contractId, filePath) {
         }
 
         // Clean up the temporary file if needed
-        if (isTemporary && fs.existsSync(filePath)) {
+        if (fs.existsSync(filePath)) {
             fs.unlinkSync(filePath);
             console.log(`Temporary file ${filePath} deleted after error`);
         }
