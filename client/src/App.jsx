@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { 
   CssBaseline, 
   Box, 
@@ -6,11 +6,13 @@ import {
   createTheme,
   Container 
 } from '@mui/material';
+import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import NavBar from './components/NavBar';
-import Header from './components/Header';
 import Footer from './components/Footer';
-import WalletInfo from './components/WalletInfo';
 import ContractAnalyzer from './components/ContractAnalyzer';
+import ContractHistory from './components/ContractHistory';
+import WalletInfo from './components/WalletInfo';
+import Header from './components/Header';
 
 // custom theme, color pallette and css baseline
 const theme = createTheme({
@@ -37,13 +39,38 @@ const theme = createTheme({
   },
 });
 
-function App() {
+// Wrap the main app content to use useLocation
+function AppContent() {
   const [walletData, setWalletData] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [marketData, setMarketData] = useState(null);
   const [contractData, setContractData] = useState(null);
   const [contractLoading, setContractLoading] = useState(false);
+  const location = useLocation();
+
+  useEffect(() => {
+    const fetchMarketData = async () => {
+      try {
+        const response = await fetch('http://localhost:5000/api/market-data');
+        const data = await response.json();
+        
+        if (!response.ok) {
+          throw new Error(data.error || 'Failed to fetch market data');
+        }
+
+        setMarketData(data);
+      } catch (err) {
+        console.error('Error fetching market data:', err);
+      }
+    };
+
+    fetchMarketData();
+    // Refresh market data every 5 minutes
+    const interval = setInterval(fetchMarketData, 5 * 60 * 1000);
+
+    return () => clearInterval(interval);
+  }, []);
 
   const handleSearch = async (address) => {
     try {
@@ -64,8 +91,8 @@ function App() {
       console.log('Received wallet data:', data);
       setWalletData(data);
     } catch (err) {
-      console.error('Search error:', err);
-      setError(err.message || 'Error fetching wallet data');
+      console.error('Error:', err);
+      setError(err.message);
     } finally {
       setLoading(false);
     }
@@ -99,49 +126,79 @@ function App() {
     }
   };
 
+  // Only show Header on home page with no wallet data
+  const shouldShowHeader = location.pathname === '/' && !walletData && !loading && !error;
+
   return (
-    <ThemeProvider theme={theme}>
-      <CssBaseline />
-      <Box
-        sx={{
-          display: 'flex',
-          flexDirection: 'column',
-          minHeight: '100vh',
+    <Box
+      sx={{
+        display: 'flex',
+        flexDirection: 'column',
+        minHeight: '100vh',
+        width: '100%',
+        alignItems: 'center',
+        bgcolor: 'background.default'
+      }}
+    >
+      <Box sx={{ width: '100%' }}>
+        <NavBar 
+          onSearch={handleSearch} 
+          onContractAnalysisComplete={handleContractAnalysis}
+        />
+        {shouldShowHeader && <Header />}
+      </Box>
+      
+      <Container 
+        maxWidth={false} 
+        sx={{ 
           width: '100%',
-          alignItems: 'center',
-          bgcolor: 'background.default'
+          maxWidth: '1400px !important',
+          px: { xs: 2, sm: 3 }
         }}
       >
-        <Box sx={{ width: '100%' }}>
-          <NavBar 
-            onSearch={handleSearch} 
-            onContractAnalysisComplete={handleContractAnalysis}
-          />
+        <Box component="main" sx={{ flex: 1, width: '100%', my: 3 }}>
+          <Routes>
+            <Route 
+              path="/" 
+              element={
+                <WalletInfo 
+                  loading={loading} 
+                  error={error} 
+                  walletData={walletData} 
+                  marketData={marketData} 
+                />
+              } 
+            />
+            <Route path="/history" element={<ContractHistory />} />
+            <Route 
+              path="/contract/:contractId" 
+              element={
+                <ContractAnalyzer 
+                  loading={contractLoading} 
+                  contractData={contractData} 
+                  error={error}
+                />
+              } 
+            />
+          </Routes>
         </Box>
-        
-        <Container 
-          maxWidth={false} 
-          sx={{ 
-            width: '100%',
-            maxWidth: '1400px !important',
-            px: { xs: 2, sm: 3 }
-          }}
-        >
-          <Header />
-          <Box component="main" sx={{ flex: 1, width: '100%', my: 3 }}>
-            {contractData ? (
-              <ContractAnalyzer loading={contractLoading} contractData={contractData} />
-            ) : (
-              <WalletInfo loading={loading} error={error} walletData={walletData} marketData={marketData} />
-            )}
-          </Box>
-        </Container>
-        
-        <Box sx={{ width: '100%', mt: 'auto' }}>
-          <Footer />
-        </Box>
+      </Container>
+      
+      <Box sx={{ width: '100%', mt: 'auto' }}>
+        <Footer />
       </Box>
-    </ThemeProvider>
+    </Box>
+  );
+}
+
+function App() {
+  return (
+    <BrowserRouter>
+      <ThemeProvider theme={theme}>
+        <CssBaseline />
+        <AppContent />
+      </ThemeProvider>
+    </BrowserRouter>
   );
 }
 

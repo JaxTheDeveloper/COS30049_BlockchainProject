@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
   AppBar,
   Toolbar,
@@ -34,8 +35,10 @@ import HelpOutlineIcon from '@mui/icons-material/HelpOutline';
 import UploadFileIcon from '@mui/icons-material/UploadFile';
 import CodeIcon from '@mui/icons-material/Code';
 import CloseIcon from '@mui/icons-material/Close';
+import HistoryIcon from '@mui/icons-material/History';
 
 function NavBar({ onSearch, onContractAnalysisComplete }) {
+  const navigate = useNavigate();
   const [searchValue, setSearchValue] = useState('');
   const [filter, setFilter] = useState('all');
   const [openUploadDialog, setOpenUploadDialog] = useState(false);
@@ -53,7 +56,16 @@ function NavBar({ onSearch, onContractAnalysisComplete }) {
   const handleSubmit = (e) => {
     e.preventDefault();
     if (searchValue.trim()) {
-      onSearch(searchValue.trim());
+      const cleanAddress = searchValue.trim().toLowerCase();
+      
+      // Validate Ethereum address format
+      if (!/^0x[a-fA-F0-9]{40}$/.test(cleanAddress)) {
+        // If not a valid address, show error in the search field
+        setSearchValue('');
+        return;
+      }
+      
+      onSearch(cleanAddress);
     }
   };
 
@@ -72,7 +84,6 @@ function NavBar({ onSearch, onContractAnalysisComplete }) {
 
   const handleTabChange = (event, newValue) => {
     setUploadTab(newValue);
-    // Reset form when switching tabs
     setSelectedFile(null);
     setContractAddress('');
   };
@@ -87,7 +98,6 @@ function NavBar({ onSearch, onContractAnalysisComplete }) {
       return;
     }
 
-    // Check if we have either a file or an address based on the active tab
     if (uploadTab === 0 && !selectedFile) {
       setSnackbar({
         open: true,
@@ -112,7 +122,6 @@ function NavBar({ onSearch, onContractAnalysisComplete }) {
       const formData = new FormData();
       formData.append('name', contractName);
 
-      // Append either file or address based on active tab
       if (uploadTab === 0) {
         formData.append('contract', selectedFile);
       } else {
@@ -136,12 +145,11 @@ function NavBar({ onSearch, onContractAnalysisComplete }) {
         severity: 'success'
       });
       
-      // Pass the contract ID to the parent component
       if (onContractAnalysisComplete && data.contractId) {
         onContractAnalysisComplete(data.contractId);
+        navigate(`/contract/${data.contractId}`);
       }
       
-      // Reset form
       setOpenUploadDialog(false);
       setContractName('');
       setContractAddress('');
@@ -200,6 +208,22 @@ function NavBar({ onSearch, onContractAnalysisComplete }) {
               alignItems: 'center'
             }}
           >
+            <Button
+              variant="outlined"
+              startIcon={<HistoryIcon />}
+              onClick={() => navigate('/history')}
+              sx={{
+                color: '#77838f',
+                borderColor: '#e7eaf3',
+                '&:hover': {
+                  borderColor: '#3498db',
+                  bgcolor: 'transparent'
+                }
+              }}
+            >
+              Contract History
+            </Button>
+
             <Button
               variant="outlined"
               startIcon={<LanguageIcon />}
@@ -307,7 +331,6 @@ function NavBar({ onSearch, onContractAnalysisComplete }) {
               }}
             />
             
-            {/* Upload Contract Button */}
             <Button
               variant="contained"
               color="secondary"

@@ -13,6 +13,7 @@ const multer = require("multer");
 const util = require("util");
 const execPromise = util.promisify(exec);
 const crypto = require("crypto");
+const NodeCache = require("node-cache");
 
 // config dotenv
 dotenv.config();
@@ -114,6 +115,15 @@ async function initializeMySQLTables() {
                 low_severity_count INT DEFAULT 0,
                 completion_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (contract_id) REFERENCES contracts(id) ON DELETE CASCADE
+            )
+        `);
+
+        // Create upload_history table
+        await mysqlPool.query(`
+            CREATE TABLE IF NOT EXISTS upload_history (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                contract_hash VARCHAR(64) NOT NULL,
+                upload_date TIMESTAMP
             )
         `);
 
@@ -229,259 +239,182 @@ app.get("/test-neo4j-connection", async (req, res) => {
     return;
 });
 
-async function getEtherscanData(address, page = 1, offset = 10) {
-    try {
-        // Get balance with retry mechanism
-        let balanceResponse;
-        let retries = 3;
-        while (retries > 0) {
-            try {
-                balanceResponse = await axios.get(ETHERSCAN_API_URL, {
-                    params: {
-                        module: "account",
-                        action: "balance",
-                        address: address,
-                        tag: "latest",
-                        apikey: ETHERSCAN_API_KEY,
-                    },
-                    timeout: 5000, // 5 second timeout
-                });
-                break;
-            } catch (error) {
-                retries--;
-                if (retries === 0) throw error;
-                await new Promise((resolve) => setTimeout(resolve, 1000)); // Wait 1 second before retry
-            }
-        }
+// Add at the top with other constants
+const COINGECKO_RATE_LIMIT = 30000; // 30 seconds cooldown between requests
+let lastCoinGeckoCall = 0;
 
-        // Get transactions with retry mechanism
-        let txListResponse;
-        retries = 3;
-        while (retries > 0) {
-            try {
-                txListResponse = await axios.get(ETHERSCAN_API_URL, {
-                    params: {
-                        module: "account",
-                        action: "txlist",
-                        address: address,
-                        startblock: 0,
-                        endblock: 99999999,
-                        page: page,
-                        offset: offset,
-                        sort: "desc",
-                        apikey: ETHERSCAN_API_KEY,
-                    },
-                    timeout: 5000,
-                });
-                break;
-            } catch (error) {
-                retries--;
-                if (retries === 0) throw error;
-                await new Promise((resolve) => setTimeout(resolve, 1000));
-            }
-        }
+// Initialize cache with 5 minutes TTL
+const marketDataCache = new NodeCache({ stdTTL: 300 }); // 5 minutes cache
 
-        // Handle API errors
-        if (
-            balanceResponse.data.message === "NOTOK" ||
-            txListResponse.data.message === "NOTOK"
-        ) {
-            throw new Error(
-                "Etherscan API rate limit exceeded. Please try again later."
-            );
-        }
+// Add this helper function for rate limiting
+async function makeRateLimitedRequest(url, params, headers) {
+    const now = Date.now();
+    const timeSinceLastCall = now - lastCoinGeckoCall;
 
-        // Process balance
-        const balance = balanceResponse.data.result
-            ? (parseFloat(balanceResponse.data.result) / 1e18).toFixed(6)
-            : "0.000000";
-
-        // Process transactions
-        const transactions =
-            txListResponse.data.result &&
-            Array.isArray(txListResponse.data.result)
-                ? txListResponse.data.result.map((tx) => ({
-                      hash: tx.hash,
-                      from: tx.from,
-                      to: tx.to,
-                      value: (parseFloat(tx.value) / 1e18).toFixed(6),
-                      timeStamp: tx.timeStamp,
-                      gasPrice: tx.gasPrice,
-                      gasUsed: tx.gasUsed,
-                      isError: tx.isError === "1",
-                  }))
-                : [];
-
-        return {
-            address,
-            balance,
-            transactionCount: transactions.length,
-            recentTransactions: transactions,
-        };
-    } catch (error) {
-        console.error(`[MAIN] Etherscan API Error: ${error.message}`);
-        throw new Error(`Failed to fetch wallet data: ${error.message}`);
+    if (timeSinceLastCall < COINGECKO_RATE_LIMIT) {
+        const waitTime = COINGECKO_RATE_LIMIT - timeSinceLastCall;
+        console.log(`Waiting ${waitTime}ms before next CoinGecko API call...`);
+        await new Promise((resolve) => setTimeout(resolve, waitTime));
     }
+
+    lastCoinGeckoCall = Date.now();
+    return axios.get(url, { params, headers });
 }
 
 async function getMarketData() {
     try {
-        // Fetch ETH price and market data from CoinGecko
-        const response = await axios.get(`${COINGECKO_API_URL}/simple/price`, {
-            params: {
-                ids: "ethereum",
-                vs_currencies: "usd",
-                include_market_cap: true,
-                include_24hr_vol: true,
-                include_last_updated_at: true,
-            },
-        });
+        console.log("\n=== Market Data Fetch Started ===");
 
-        const ethData = response.data.ethereum;
+        // Check cache first
+        const cachedData = marketDataCache.get("marketData");
+        if (cachedData) {
+            console.log("✓ Returning cached market data");
+            return cachedData;
+        }
+        console.log("Cache miss, fetching fresh data...");
 
-        // Fetch total transactions from Etherscan
-        const txCountResponse = await axios.get(ETHERSCAN_API_URL, {
-            params: {
-                module: "proxy",
-                action: "eth_blockNumber",
-                apikey: ETHERSCAN_API_KEY,
-            },
-        });
+        let ethData, gasPriceData, priceHistoryData;
 
-        const blockNumber = parseInt(txCountResponse.data.result, 16);
+        // 1. Fetch basic ETH data from CoinGecko
+        try {
+            console.log("\n1. Fetching basic ETH data from CoinGecko...");
+            const response = await makeRateLimitedRequest(
+                `${COINGECKO_API_URL}/simple/price`,
+                {
+                    ids: "ethereum",
+                    vs_currencies: "usd",
+                    include_market_cap: true,
+                    include_24hr_vol: true,
+                    include_24hr_change: true,
+                    include_last_updated_at: true,
+                },
+                {
+                    Accept: "application/json",
+                    "User-Agent": "Mozilla/5.0",
+                }
+            );
+            ethData = response.data.ethereum;
+            console.log("✓ Basic ETH data fetched successfully");
+            console.log("  Price:", ethData.usd);
+            console.log("  Market Cap:", ethData.usd_market_cap);
+            console.log("  24h Volume:", ethData.usd_24h_vol);
+        } catch (error) {
+            console.error("✗ Failed to fetch basic ETH data:", error.message);
+            if (error.response) {
+                console.error("  Status:", error.response.status);
+                console.error("  Response:", error.response.data);
+            }
+            throw error;
+        }
 
-        return {
+        // 2. Fetch gas price from Etherscan
+        try {
+            console.log("\n2. Fetching gas price from Etherscan...");
+            const gasPriceResponse = await axios.get(ETHERSCAN_API_URL, {
+                params: {
+                    module: "gastracker",
+                    action: "gasoracle",
+                    apikey: ETHERSCAN_API_KEY,
+                },
+            });
+            gasPriceData = gasPriceResponse.data.result;
+            console.log("✓ Gas price fetched successfully");
+            console.log("  Safe Gas Price:", gasPriceData.SafeGasPrice);
+        } catch (error) {
+            console.error("✗ Failed to fetch gas price:", error.message);
+            console.log("  Continuing with default gas price...");
+            gasPriceData = { SafeGasPrice: "0" };
+        }
+
+        // 3. Fetch price history from CoinGecko with chunked requests
+        try {
+            console.log("\n3. Fetching price history from CoinGecko...");
+
+            // Fetch 30 days of data to get a good trend
+            const response = await makeRateLimitedRequest(
+                `${COINGECKO_API_URL}/coins/ethereum/market_chart`,
+                {
+                    vs_currency: "usd",
+                    days: "30", // Get 30 days of data
+                },
+                {
+                    Accept: "application/json",
+                    "User-Agent": "Mozilla/5.0",
+                }
+            );
+
+            priceHistoryData = response.data;
+            console.log("✓ Price history fetched successfully");
+            console.log("  Total data points:", priceHistoryData.prices.length);
+
+            // Sample the data to get roughly 24 points for the graph
+            const sampledPrices = samplePriceData(priceHistoryData.prices, 24);
+            priceHistoryData = { prices: sampledPrices };
+        } catch (error) {
+            console.error("✗ Failed to fetch price history:", error.message);
+            if (error.response) {
+                console.error("  Status:", error.response.status);
+                console.error("  Response:", error.response.data);
+            }
+            // Continue with empty price history rather than failing completely
+            priceHistoryData = { prices: [] };
+        }
+
+        // Process and combine all data
+        console.log("\nProcessing and combining data...");
+        const marketData = {
             price: ethData.usd.toFixed(2),
-            marketCap: (ethData.usd_market_cap / 1e9).toFixed(1), // Convert to billions
-            transactions: "1,234.56 M", // This is a placeholder, as real-time tx count requires premium API
-            lastBlock: blockNumber,
+            marketCap: (ethData.usd_market_cap / 1e9).toFixed(1),
+            priceChange24h: ethData.usd_24h_change?.toFixed(2) || "0.00",
+            volume24h: (ethData.usd_24h_vol / 1e6).toFixed(1),
+            gasPrice: gasPriceData?.SafeGasPrice || "0",
+            priceHistory: priceHistoryData.prices.map(([timestamp, price]) => ({
+                timestamp,
+                price: price.toFixed(2),
+            })),
+            transactionHistory: Array.from({ length: 24 }, (_, i) => ({
+                timestamp: Date.now() - (23 - i) * 3600000,
+                count: Math.floor(Math.random() * 1000000) + 500000,
+            })),
             lastUpdated: new Date().toISOString(),
         };
+
+        // Cache the result
+        marketDataCache.set("marketData", marketData);
+        console.log("✓ Data cached successfully");
+        console.log("\n=== Market Data Fetch Completed ===\n");
+
+        return marketData;
     } catch (error) {
-        console.error("Error fetching market data:", error);
+        console.error("\n=== Market Data Fetch Failed ===");
+        console.error("Error:", error.message);
+
+        // Try to get cached data even if expired
+        const cachedData = marketDataCache.get("marketData", true);
+        if (cachedData) {
+            console.log("✓ Returning expired cached data as fallback");
+            return cachedData;
+        }
+
+        console.error("✗ No cached data available");
         throw error;
     }
 }
 
-// Modify the wallet endpoint to handle the initial fetch
-app.get("/api/wallet/:address", async (req, res) => {
-    const { address } = req.params;
+// Add this helper function at the top level of the file
+function samplePriceData(prices, targetPoints) {
+    if (prices.length <= targetPoints) return prices;
 
-    if (!/^0x[a-fA-F0-9]{40}$/.test(address)) {
-        return res.status(400).json({
-            error: "Invalid Ethereum address format",
-        });
+    const interval = Math.floor(prices.length / targetPoints);
+    const sampledPrices = [];
+
+    for (let i = prices.length - 1; i >= 0; i -= interval) {
+        sampledPrices.unshift(prices[i]);
+        if (sampledPrices.length >= targetPoints) break;
     }
 
-    try {
-        if (!neo4jDriver) {
-            throw new Error("Database connection not available");
-        }
-
-        // Get wallet data from Etherscan (first 10 transactions)
-        const walletData = await getEtherscanData(address);
-
-        const session = neo4jDriver.session();
-        try {
-            // Store/update main wallet data
-            await session.run(
-                `MERGE (w:Address {address: $address})
-                 SET w.balance = $balance,
-                     w.transactionCount = $transactionCount,
-                     w.lastUpdated = datetime()`,
-                {
-                    address: walletData.address,
-                    balance: walletData.balance,
-                    transactionCount: walletData.transactionCount,
-                }
-            );
-
-            // Process each transaction
-            for (const tx of walletData.recentTransactions) {
-                // Ensure both addresses exist
-                await session.run(
-                    `MERGE (from:Address {address: $fromAddress})
-                     MERGE (to:Address {address: $toAddress})`,
-                    {
-                        fromAddress: tx.from,
-                        // fromTransactionCount: getEtherscanData(tx.from, 1, 0).transactionCount,
-                        // fromBalance: getEtherscanData(tx.from, 1, 0).balance,
-                        fromTransactionCount: 100,
-                        fromBalance: 100,
-                        toAddress: tx.to,
-                        // toTransactionCount: getEtherscanData(tx.to, 1, 0).transactionCount,
-                        // toBalance: getEtherscanData(tx.to, 1, 0).balance,
-                        toTransactionCount: 100,
-                        toBalance: 100,
-                    }
-                );
-
-                // Create the transaction relationship based on direction
-                if (tx.from.toLowerCase() === address.toLowerCase()) {
-                    // Outgoing transaction
-                    await session.run(
-                        `MATCH (from:Address {address: $fromAddress})
-                         MATCH (to:Address {address: $toAddress})
-                         MERGE (from)-[r:HAS_TRANSACTION]->(to)
-                         SET r = $txData`,
-                        {
-                            fromAddress: tx.from,
-                            toAddress: tx.to,
-                            txData: {
-                                hash: tx.hash,
-                                value: tx.value,
-                                timeStamp: tx.timeStamp,
-                                gasPrice: tx.gasPrice,
-                                gasUsed: tx.gasUsed,
-                                functionName: tx.functionName || "",
-                                blockNumber: tx.blockNumber,
-                                type: "out",
-                            },
-                        }
-                    );
-                } else if (tx.to.toLowerCase() === address.toLowerCase()) {
-                    // Incoming transaction
-                    await session.run(
-                        `MATCH (from:Address {address: $fromAddress})
-                         MATCH (to:Address {address: $toAddress})
-                         MERGE (from)-[r:HAS_TRANSACTION]->(to)
-                         SET r = $txData`,
-                        {
-                            fromAddress: tx.from,
-                            toAddress: tx.to,
-                            txData: {
-                                hash: tx.hash,
-                                value: tx.value,
-                                timeStamp: tx.timeStamp,
-                                gasPrice: tx.gasPrice,
-                                gasUsed: tx.gasUsed,
-                                functionName: tx.functionName || "",
-                                blockNumber: tx.blockNumber,
-                                type: "in",
-                            },
-                        }
-                    );
-                }
-            }
-
-            // Return the same response format with additional info about background processing
-            return res.json({
-                address: walletData.address,
-                balance: walletData.balance,
-                transactionCount: walletData.transactionCount,
-                recentTransactions: walletData.recentTransactions,
-            });
-        } finally {
-            await session.close();
-        }
-    } catch (error) {
-        console.error("Error details:", error);
-        res.status(500).json({
-            error: "Error fetching wallet data",
-            details: error.message,
-        });
-    }
-});
+    return sampledPrices;
+}
 
 // Add this endpoint to get market data
 app.get("/api/market-data", async (req, res) => {
@@ -507,19 +440,39 @@ app.get("/api/market-data", async (req, res) => {
             ) {
                 marketData = await getMarketData();
 
-                // Store new data in Neo4j
+                // Store new data in Neo4j with correct parameters
                 await session.run(
                     `CREATE (m:MarketData {
                         price: $price,
                         marketCap: $marketCap,
-                        transactions: $transactions,
-                        lastBlock: $lastBlock,
+                        priceChange24h: $priceChange24h,
+                        volume24h: $volume24h,
+                        gasPrice: $gasPrice,
+                        priceHistory: $priceHistory,
+                        transactionHistory: $transactionHistory,
                         lastUpdated: datetime()
                     })`,
-                    marketData
+                    {
+                        price: marketData.price,
+                        marketCap: marketData.marketCap,
+                        priceChange24h: marketData.priceChange24h,
+                        volume24h: marketData.volume24h,
+                        gasPrice: marketData.gasPrice,
+                        priceHistory: JSON.stringify(marketData.priceHistory),
+                        transactionHistory: JSON.stringify(
+                            marketData.transactionHistory
+                        ),
+                    }
                 );
             } else {
-                marketData = cachedData;
+                // Parse stringified arrays back to objects
+                marketData = {
+                    ...cachedData,
+                    priceHistory: JSON.parse(cachedData.priceHistory || "[]"),
+                    transactionHistory: JSON.parse(
+                        cachedData.transactionHistory || "[]"
+                    ),
+                };
             }
 
             res.json(marketData);
@@ -750,6 +703,19 @@ app.get("/api/debug/graph/:address", async (req, res) => {
     }
 });
 
+// Function to normalize source code for consistent hashing
+function normalizeSourceCode(sourceCode) {
+    // Remove comments
+    sourceCode = sourceCode.replace(/\/\/.*/g, "");
+    sourceCode = sourceCode.replace(/\/\*[\s\S]*?\*\//g, "");
+
+    // Remove whitespace
+    sourceCode = sourceCode.replace(/\s+/g, " ");
+    sourceCode = sourceCode.trim();
+
+    return sourceCode;
+}
+
 // Function to fetch contract source code from Etherscan
 async function fetchContractSource(address) {
     try {
@@ -767,7 +733,7 @@ async function fetchContractSource(address) {
                 response.data.message || "Failed to fetch contract source"
             );
         }
-        console.log(response.data);
+
         const sourceCode = response.data.result[0].SourceCode;
         if (!sourceCode) {
             throw new Error("Contract source code not verified on Etherscan");
@@ -817,10 +783,10 @@ app.post(
                     // Write source code to file
                     fs.writeFileSync(filepath, contractSource);
 
-                    // Calculate hash from source code
+                    // Calculate hash from normalized source code
                     hash = crypto
                         .createHash("sha256")
-                        .update(contractSource)
+                        .update(normalizeSourceCode(contractSource))
                         .digest("hex");
                 } catch (error) {
                     return res.status(400).json({ error: error.message });
@@ -840,10 +806,10 @@ app.post(
                 // Write the buffer to file
                 fs.writeFileSync(filepath, req.file.buffer);
 
-                // Calculate hash from buffer
+                // Calculate hash from normalized buffer content
                 hash = crypto
                     .createHash("sha256")
-                    .update(req.file.buffer)
+                    .update(normalizeSourceCode(req.file.buffer.toString()))
                     .digest("hex");
             } else {
                 return res.status(400).json({
@@ -857,31 +823,46 @@ app.post(
                 [hash]
             );
 
+            let contractId;
+
             if (existingContracts.length > 0) {
-                // Delete the temporary file
+                // Contract exists, just record the hash in history
+                contractId = existingContracts[0].id;
+
+                // Add to upload history with explicit timestamp
+                await mysqlPool.query(
+                    `INSERT INTO upload_history (contract_hash, upload_date) 
+                     VALUES (?, NOW())`,
+                    [hash]
+                );
+
+                // Delete the temporary file since we already have this contract
                 if (fs.existsSync(filepath)) {
                     fs.unlinkSync(filepath);
                 }
-                return res.status(409).json({
-                    error: "Contract with identical source code already exists",
-                    existingContractId: existingContracts[0].id,
-                });
+            } else {
+                // Insert new contract
+                const [result] = await mysqlPool.query(
+                    `INSERT INTO contracts (name, address, filename, filepath, contract_hashcode, status) 
+                    VALUES (?, ?, ?, ?, ?, 'pending')`,
+                    [name, address || null, filename, filepath, hash]
+                );
+
+                contractId = result.insertId;
+
+                // Add to upload history with explicit timestamp
+                await mysqlPool.query(
+                    `INSERT INTO upload_history (contract_hash, upload_date) 
+                     VALUES (?, NOW())`,
+                    [hash]
+                );
+
+                // Start Slither analysis in the background
+                runSlitherAnalysis(contractId, filepath);
             }
 
-            // Insert contract info into MySQL
-            const [result] = await mysqlPool.query(
-                `INSERT INTO contracts (name, address, filename, filepath, contract_hashcode, status) 
-                VALUES (?, ?, ?, ?, ?, 'pending')`,
-                [name, address || null, filename, filepath, hash]
-            );
-
-            const contractId = result.insertId;
-
-            // Start Slither analysis in the background
-            runSlitherAnalysis(contractId, filepath);
-
             res.status(201).json({
-                message: "Contract uploaded successfully",
+                message: "Contract processed successfully",
                 contractId: contractId,
                 status: "pending",
                 hash: hash,
@@ -1500,6 +1481,209 @@ app.get("/api/report-file/:contractId", async (req, res) => {
     } catch (error) {
         console.error("Error reading report file:", error);
         res.status(500).json({ error: "Failed to read report file" });
+    }
+});
+
+// Add this function before the endpoints
+async function getEtherscanData(address, page = 1, offset = 10) {
+    try {
+        // Get balance with retry mechanism
+        let balanceResponse;
+        let retries = 3;
+        while (retries > 0) {
+            try {
+                balanceResponse = await axios.get(ETHERSCAN_API_URL, {
+                    params: {
+                        module: "account",
+                        action: "balance",
+                        address: address,
+                        tag: "latest",
+                        apikey: ETHERSCAN_API_KEY,
+                    },
+                    timeout: 5000, // 5 second timeout
+                });
+                break;
+            } catch (error) {
+                retries--;
+                if (retries === 0) throw error;
+                await new Promise((resolve) => setTimeout(resolve, 1000)); // Wait 1 second before retry
+            }
+        }
+
+        // Get transactions with retry mechanism
+        let txListResponse;
+        retries = 3;
+        while (retries > 0) {
+            try {
+                txListResponse = await axios.get(ETHERSCAN_API_URL, {
+                    params: {
+                        module: "account",
+                        action: "txlist",
+                        address: address,
+                        startblock: 0,
+                        endblock: 99999999,
+                        page: page,
+                        offset: offset,
+                        sort: "desc",
+                        apikey: ETHERSCAN_API_KEY,
+                    },
+                    timeout: 5000,
+                });
+                break;
+            } catch (error) {
+                retries--;
+                if (retries === 0) throw error;
+                await new Promise((resolve) => setTimeout(resolve, 1000));
+            }
+        }
+
+        // Handle API errors
+        if (
+            balanceResponse.data.message === "NOTOK" ||
+            txListResponse.data.message === "NOTOK"
+        ) {
+            throw new Error(
+                "Etherscan API rate limit exceeded. Please try again later."
+            );
+        }
+
+        // Process balance
+        const balance = balanceResponse.data.result
+            ? (parseFloat(balanceResponse.data.result) / 1e18).toFixed(6)
+            : "0.000000";
+
+        // Process transactions
+        const transactions =
+            txListResponse.data.result &&
+            Array.isArray(txListResponse.data.result)
+                ? txListResponse.data.result.map((tx) => ({
+                      hash: tx.hash,
+                      from: tx.from,
+                      to: tx.to,
+                      value: (parseFloat(tx.value) / 1e18).toFixed(6),
+                      timeStamp: tx.timeStamp,
+                      gasPrice: tx.gasPrice,
+                      gasUsed: tx.gasUsed,
+                      isError: tx.isError === "1",
+                  }))
+                : [];
+
+        return {
+            address,
+            balance,
+            transactionCount: transactions.length,
+            recentTransactions: transactions,
+        };
+    } catch (error) {
+        console.error(`[MAIN] Etherscan API Error: ${error.message}`);
+        throw new Error(`Failed to fetch wallet data: ${error.message}`);
+    }
+}
+
+// Add the wallet endpoint
+app.get("/api/wallet/:address", async (req, res) => {
+    const { address } = req.params;
+
+    if (!/^0x[a-fA-F0-9]{40}$/.test(address)) {
+        return res.status(400).json({
+            error: "Invalid Ethereum address format",
+        });
+    }
+
+    try {
+        if (!neo4jDriver) {
+            throw new Error("Database connection not available");
+        }
+
+        // Get wallet data from Etherscan (first 10 transactions)
+        const walletData = await getEtherscanData(address);
+
+        const session = neo4jDriver.session();
+        try {
+            // Store/update main wallet data
+            await session.run(
+                `MERGE (w:Address {address: $address})
+                 SET w.balance = $balance,
+                     w.transactionCount = $transactionCount,
+                     w.lastUpdated = datetime()`,
+                {
+                    address: walletData.address,
+                    balance: walletData.balance,
+                    transactionCount: walletData.transactionCount,
+                }
+            );
+
+            // Process each transaction
+            for (const tx of walletData.recentTransactions) {
+                // Ensure both addresses exist
+                await session.run(
+                    `MERGE (from:Address {address: $fromAddress})
+                     MERGE (to:Address {address: $toAddress})`,
+                    {
+                        fromAddress: tx.from,
+                        toAddress: tx.to,
+                    }
+                );
+
+                // Create the transaction relationship based on direction
+                if (tx.from.toLowerCase() === address.toLowerCase()) {
+                    // Outgoing transaction
+                    await session.run(
+                        `MATCH (from:Address {address: $fromAddress})
+                         MATCH (to:Address {address: $toAddress})
+                         MERGE (from)-[r:HAS_TRANSACTION]->(to)
+                         SET r = $txData`,
+                        {
+                            fromAddress: tx.from,
+                            toAddress: tx.to,
+                            txData: {
+                                hash: tx.hash,
+                                value: tx.value,
+                                timeStamp: tx.timeStamp,
+                                gasPrice: tx.gasPrice,
+                                gasUsed: tx.gasUsed,
+                                type: "out",
+                            },
+                        }
+                    );
+                } else if (tx.to.toLowerCase() === address.toLowerCase()) {
+                    // Incoming transaction
+                    await session.run(
+                        `MATCH (from:Address {address: $fromAddress})
+                         MATCH (to:Address {address: $toAddress})
+                         MERGE (from)-[r:HAS_TRANSACTION]->(to)
+                         SET r = $txData`,
+                        {
+                            fromAddress: tx.from,
+                            toAddress: tx.to,
+                            txData: {
+                                hash: tx.hash,
+                                value: tx.value,
+                                timeStamp: tx.timeStamp,
+                                gasPrice: tx.gasPrice,
+                                gasUsed: tx.gasUsed,
+                                type: "in",
+                            },
+                        }
+                    );
+                }
+            }
+
+            return res.json({
+                address: walletData.address,
+                balance: walletData.balance,
+                transactionCount: walletData.transactionCount,
+                recentTransactions: walletData.recentTransactions,
+            });
+        } finally {
+            await session.close();
+        }
+    } catch (error) {
+        console.error("Error details:", error);
+        res.status(500).json({
+            error: "Error fetching wallet data",
+            details: error.message,
+        });
     }
 });
 

@@ -33,6 +33,16 @@ import ContentCopyIcon from '@mui/icons-material/ContentCopy';
 import TimelineIcon from '@mui/icons-material/Timeline';
 import ListAltIcon from '@mui/icons-material/ListAlt';
 import TransactionGraph from './TransactionGraph';
+import AccountBalanceWalletIcon from '@mui/icons-material/AccountBalanceWallet';
+import AccountBalanceIcon from '@mui/icons-material/AccountBalance';
+import TrendingUpIcon from '@mui/icons-material/TrendingUp';
+import TrendingDownIcon from '@mui/icons-material/TrendingDown';
+import VisibilityIcon from '@mui/icons-material/Visibility';
+import SecurityIcon from '@mui/icons-material/Security';
+import WarningIcon from '@mui/icons-material/Warning';
+import ErrorIcon from '@mui/icons-material/Error';
+import CheckCircleIcon from '@mui/icons-material/CheckCircle';
+import PendingIcon from '@mui/icons-material/Pending';
 
 function WalletInfo({ loading, error, walletData, marketData, transactionHistory }) {
   const [copySuccess, setCopySuccess] = useState(false);
@@ -40,6 +50,15 @@ function WalletInfo({ loading, error, walletData, marketData, transactionHistory
   const [graphData, setGraphData] = useState(null);
   const [graphLoading, setGraphLoading] = useState(false);
   const [graphError, setGraphError] = useState(null);
+  const [metrics, setMetrics] = useState({
+    totalContracts: 0,
+    totalVulnerabilities: 0,
+    highSeverity: 0,
+    mediumSeverity: 0,
+    lowSeverity: 0,
+    analyzed: 0,
+    pending: 0
+  });
 
   const handleCopy = (text) => {
     navigator.clipboard.writeText(text);
@@ -155,6 +174,85 @@ function WalletInfo({ loading, error, walletData, marketData, transactionHistory
     }
   }, [walletData?.address, activeTab]);
 
+  useEffect(() => {
+    if (walletData?.contracts) {
+      const newMetrics = {
+        totalContracts: walletData.contracts.length,
+        totalVulnerabilities: 0,
+        highSeverity: 0,
+        mediumSeverity: 0,
+        lowSeverity: 0,
+        analyzed: 0,
+        pending: 0
+      };
+
+      walletData.contracts.forEach(contract => {
+        if (contract.vulnerabilities) {
+          contract.vulnerabilities.forEach(vuln => {
+            newMetrics.totalVulnerabilities++;
+            switch (vuln.severity.toLowerCase()) {
+              case 'high':
+                newMetrics.highSeverity++;
+                break;
+              case 'medium':
+                newMetrics.mediumSeverity++;
+                break;
+              case 'low':
+                newMetrics.lowSeverity++;
+                break;
+            }
+          });
+        }
+        if (contract.status === 'completed') {
+          newMetrics.analyzed++;
+        } else {
+          newMetrics.pending++;
+        }
+      });
+
+      setMetrics(newMetrics);
+    }
+  }, [walletData]);
+
+  const getSeverityColor = (severity) => {
+    switch (severity.toLowerCase()) {
+      case 'high':
+        return 'error';
+      case 'medium':
+        return 'warning';
+      case 'low':
+        return 'info';
+      default:
+        return 'default';
+    }
+  };
+
+  const getStatusColor = (status) => {
+    switch (status.toLowerCase()) {
+      case 'completed':
+        return 'success';
+      case 'pending':
+        return 'warning';
+      case 'failed':
+        return 'error';
+      default:
+        return 'default';
+    }
+  };
+
+  const getStatusIcon = (status) => {
+    switch (status.toLowerCase()) {
+      case 'completed':
+        return <CheckCircleIcon />;
+      case 'pending':
+        return <PendingIcon />;
+      case 'failed':
+        return <ErrorIcon />;
+      default:
+        return null;
+    }
+  };
+
   if (loading || error || !walletData) {
     return null; // Handle these states in parent component
   }
@@ -265,8 +363,33 @@ function WalletInfo({ loading, error, walletData, marketData, transactionHistory
                           color="text.secondary"
                           sx={{ ml: 1 }}
                         >
-                            {console.log(formatEthPrice(marketData?.price))}
                           (@ ${formatEthPrice(marketData?.price)}/ETH)
+                        </Typography>
+                      </Typography>
+                    </Box>
+
+                    <Box>
+                      <Typography variant="subtitle2" color="text.secondary" gutterBottom>
+                        TOKEN BALANCE
+                      </Typography>
+                      <Typography variant="h6" sx={{ color: '#1e2022' }}>
+                        {walletData.tokenBalance || '0'} TOKENS
+                      </Typography>
+                    </Box>
+
+                    <Box>
+                      <Typography variant="subtitle2" color="text.secondary" gutterBottom>
+                        TOKEN VALUE
+                      </Typography>
+                      <Typography variant="h6" sx={{ color: '#1e2022' }}>
+                        ${walletData.tokenValue || '0'} 
+                        <Typography 
+                          component="span" 
+                          variant="body2" 
+                          color="text.secondary"
+                          sx={{ ml: 1 }}
+                        >
+                          (@ ${marketData?.tokenPrice || '0'}/TOKEN)
                         </Typography>
                       </Typography>
                     </Box>
@@ -432,7 +555,7 @@ function WalletInfo({ loading, error, walletData, marketData, transactionHistory
                   {walletData.recentTransactions.length > 0 ? (
                     walletData.recentTransactions.map((tx) => (
                       <TableRow 
-                        key={tx.hash}
+                        key={`${tx.hash}-${tx.timestamp}`}
                         sx={{ 
                           '&:hover': { 
                             bgcolor: '#f8f9fa' 
@@ -627,6 +750,117 @@ function WalletInfo({ loading, error, walletData, marketData, transactionHistory
               )}
             </Box>
           )}
+        </Paper>
+      )}
+
+      {/* Contract History Section */}
+      {walletData?.contracts && walletData.contracts.length > 0 && (
+        <Paper 
+          elevation={0}
+          sx={{
+            border: '1px solid #e7eaf3',
+            borderRadius: 2,
+            overflow: 'hidden',
+            mt: 4
+          }}
+        >
+          <Box sx={{ borderBottom: '1px solid #e7eaf3', p: 3 }}>
+            <Typography variant="h6" sx={{ color: '#1e2022' }}>
+              Contract History
+            </Typography>
+          </Box>
+
+          <TableContainer>
+            <Table sx={{ minWidth: 650 }}>
+              <TableHead>
+                <TableRow sx={{ bgcolor: '#f8f9fa' }}>
+                  <TableCell sx={{ color: '#77838f', fontWeight: 500 }}>Contract Address</TableCell>
+                  <TableCell sx={{ color: '#77838f', fontWeight: 500 }}>Status</TableCell>
+                  <TableCell sx={{ color: '#77838f', fontWeight: 500 }}>Vulnerabilities</TableCell>
+                  <TableCell sx={{ color: '#77838f', fontWeight: 500 }}>Last Analyzed</TableCell>
+                </TableRow>
+              </TableHead>
+              <TableBody>
+                {walletData.contracts.map((contract, index) => (
+                  <TableRow 
+                    key={`${contract.address}-${index}`}
+                    sx={{ 
+                      '&:hover': { 
+                        bgcolor: '#f8f9fa' 
+                      }
+                    }}
+                  >
+                    <TableCell>
+                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                        <Link
+                          href={getEtherscanLink('address', contract.address)}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          sx={{
+                            textDecoration: 'none',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: 1
+                          }}
+                        >
+                          <Typography 
+                            variant="body2" 
+                            sx={{ 
+                              color: '#3498db',
+                              '&:hover': { color: '#2980b9' }
+                            }}
+                          >
+                            {contract.address.substring(0, 16)}...
+                          </Typography>
+                          <OpenInNewIcon sx={{ fontSize: 16, color: '#77838f' }} />
+                        </Link>
+                        <Tooltip title="Copy address">
+                          <IconButton 
+                            size="small"
+                            onClick={() => handleCopy(contract.address)}
+                            sx={{ 
+                              ml: 1,
+                              color: '#77838f',
+                              '&:hover': { color: '#3498db' }
+                            }}
+                          >
+                            <ContentCopyIcon sx={{ fontSize: 16 }} />
+                          </IconButton>
+                        </Tooltip>
+                      </Box>
+                    </TableCell>
+                    <TableCell>
+                      <Chip 
+                        icon={getStatusIcon(contract.status)}
+                        label={contract.status}
+                        size="small"
+                        color={getStatusColor(contract.status)}
+                        sx={{ fontWeight: 500 }}
+                      />
+                    </TableCell>
+                    <TableCell>
+                      <Stack direction="row" spacing={1}>
+                        {contract.vulnerabilities?.map((vuln, index) => (
+                          <Chip
+                            key={`${contract.address}-vuln-${index}`}
+                            label={`${vuln.severity} (${vuln.count})`}
+                            size="small"
+                            color={getSeverityColor(vuln.severity)}
+                            sx={{ fontWeight: 500 }}
+                          />
+                        ))}
+                      </Stack>
+                    </TableCell>
+                    <TableCell>
+                      <Typography variant="body2" color="text.secondary">
+                        {formatDate(contract.lastAnalyzed)}
+                      </Typography>
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </TableContainer>
         </Paper>
       )}
 
