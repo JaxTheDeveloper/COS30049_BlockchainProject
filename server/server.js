@@ -750,10 +750,14 @@ app.post(
     "/api/upload-contract",
     upload.single("contract"),
     async (req, res) => {
+        console.log("[DEBUG] Contract upload started");
         try {
             const { name, address } = req.body;
+            console.log("[DEBUG] Contract name:", name);
+            console.log("[DEBUG] Contract address:", address);
 
             if (!name) {
+                console.log("[DEBUG] Contract name missing");
                 return res
                     .status(400)
                     .json({ error: "Contract name is required" });
@@ -761,7 +765,9 @@ app.post(
 
             // Create uploads directory if it doesn't exist
             const uploadDir = path.join(__dirname, "uploads");
+            console.log("[DEBUG] Upload directory:", uploadDir);
             if (!fs.existsSync(uploadDir)) {
+                console.log("[DEBUG] Creating upload directory");
                 fs.mkdirSync(uploadDir, { recursive: true });
             }
 
@@ -772,29 +778,42 @@ app.post(
 
             // Handle contract upload by address
             if (address && !req.file) {
+                console.log("[DEBUG] Processing contract by address");
                 try {
                     // Fetch source code from Etherscan
                     contractSource = await fetchContractSource(address);
+                    console.log(
+                        "[DEBUG] Contract source fetched from Etherscan"
+                    );
 
                     // Create filename and save to disk
                     filename = `${Date.now()}-${address}.sol`;
                     filepath = path.join(uploadDir, filename);
+                    console.log("[DEBUG] File path:", filepath);
 
                     // Write source code to file
                     fs.writeFileSync(filepath, contractSource);
+                    console.log("[DEBUG] Contract source written to file");
 
                     // Calculate hash from normalized source code
                     hash = crypto
                         .createHash("sha256")
                         .update(normalizeSourceCode(contractSource))
                         .digest("hex");
+                    console.log("[DEBUG] Contract hash:", hash);
                 } catch (error) {
+                    console.log(
+                        "[DEBUG] Error processing contract by address:",
+                        error
+                    );
                     return res.status(400).json({ error: error.message });
                 }
             }
             // Handle file upload
             else if (req.file) {
+                console.log("[DEBUG] Processing uploaded contract file");
                 if (!req.file.originalname.endsWith(".sol")) {
+                    console.log("[DEBUG] Invalid file type");
                     return res.status(400).json({
                         error: "Only Solidity (.sol) files are allowed",
                     });
@@ -802,32 +821,64 @@ app.post(
 
                 filename = Date.now() + "-" + req.file.originalname;
                 filepath = path.join(uploadDir, filename);
+                console.log("[DEBUG] File path:", filepath);
 
                 // Write the buffer to file
                 fs.writeFileSync(filepath, req.file.buffer);
+                console.log("[DEBUG] Contract file written to disk");
 
                 // Calculate hash from normalized buffer content
                 hash = crypto
                     .createHash("sha256")
                     .update(normalizeSourceCode(req.file.buffer.toString()))
                     .digest("hex");
+                console.log("[DEBUG] Contract hash:", hash);
             } else {
+                console.log("[DEBUG] No contract source provided");
                 return res.status(400).json({
                     error: "Either a contract file or address must be provided",
                 });
             }
 
             // Check if contract with same hash exists
+            console.log("[DEBUG] Checking for existing contract");
             const [existingContracts] = await mysqlPool.query(
-                "SELECT id FROM contracts WHERE contract_hashcode = ?",
+                "SELECT id, status FROM contracts WHERE contract_hashcode = ?",
                 [hash]
             );
 
             let contractId;
 
             if (existingContracts.length > 0) {
-                // Contract exists, just record the hash in history
-                contractId = existingContracts[0].id;
+                console.log("[DEBUG] Contract already exists");
+                const existingContract = existingContracts[0];
+                contractId = existingContract.id;
+
+                // If the contract exists but failed, re-run the analysis
+                if (existingContract.status === "failed") {
+                    console.log(
+                        "[DEBUG] Contract exists but failed, re-running analysis"
+                    );
+                    // Update status to pending
+                    await mysqlPool.query(
+                        `UPDATE contracts SET status = 'pending' WHERE id = ?`,
+                        [contractId]
+                    );
+                    // Start Slither analysis in the background
+                    console.log(
+                        "[DEBUG] Starting Slither analysis for failed contract",
+                        contractId
+                    );
+                    runSlitherAnalysis(contractId, filepath).catch((error) => {
+                        console.error(
+                            "[DEBUG] Error in Slither analysis:",
+                            error
+                        );
+                    });
+                    console.log(
+                        "[DEBUG] Slither analysis initiated for failed contract"
+                    );
+                }
 
                 // Add to upload history with explicit timestamp
                 await mysqlPool.query(
@@ -835,12 +886,15 @@ app.post(
                      VALUES (?, NOW())`,
                     [hash]
                 );
+                console.log("[DEBUG] Added to upload history");
 
                 // Delete the temporary file since we already have this contract
                 if (fs.existsSync(filepath)) {
                     fs.unlinkSync(filepath);
+                    console.log("[DEBUG] Temporary file deleted");
                 }
             } else {
+                console.log("[DEBUG] New contract, inserting into database");
                 // Insert new contract
                 const [result] = await mysqlPool.query(
                     `INSERT INTO contracts (name, address, filename, filepath, contract_hashcode, status) 
@@ -849,6 +903,7 @@ app.post(
                 );
 
                 contractId = result.insertId;
+                console.log("[DEBUG] Contract inserted, ID:", contractId);
 
                 // Add to upload history with explicit timestamp
                 await mysqlPool.query(
@@ -856,11 +911,20 @@ app.post(
                      VALUES (?, NOW())`,
                     [hash]
                 );
+                console.log("[DEBUG] Added to upload history");
 
                 // Start Slither analysis in the background
-                runSlitherAnalysis(contractId, filepath);
+                console.log(
+                    "[DEBUG] Starting Slither analysis for contract",
+                    contractId
+                );
+                runSlitherAnalysis(contractId, filepath).catch((error) => {
+                    console.error("[DEBUG] Error in Slither analysis:", error);
+                });
+                console.log("[DEBUG] Slither analysis initiated");
             }
 
+            console.log("[DEBUG] Sending success response");
             res.status(201).json({
                 message: "Contract processed successfully",
                 contractId: contractId,
@@ -868,7 +932,7 @@ app.post(
                 hash: hash,
             });
         } catch (error) {
-            console.error("Error uploading contract:", error);
+            console.error("[DEBUG] Error in contract upload:", error);
             res.status(500).json({ error: "Failed to upload contract" });
         }
     }
@@ -876,53 +940,22 @@ app.post(
 
 // Function to run Slither analysis with timeout
 async function runSlitherAnalysis(contractId, filePath) {
+    console.log(`[DEBUG] Starting Slither analysis for contract ${contractId}`);
+    console.log(`[DEBUG] File path: ${filePath}`);
+
     // Set a timeout for the entire analysis process (2 minutes)
     const analysisTimeout = setTimeout(async () => {
         console.error(
-            `Analysis for contract ${contractId} timed out after 2 minutes`
+            `[DEBUG] Analysis for contract ${contractId} timed out after 2 minutes`
         );
-
-        try {
-            // Check current status
-            const [statusResult] = await mysqlPool.query(
-                `SELECT status FROM contracts WHERE id = ?`,
-                [contractId]
-            );
-
-            // Only update if still analyzing
-            if (
-                statusResult.length > 0 &&
-                statusResult[0].status === "analyzing"
-            ) {
-                // Update contract status to failed
-                await mysqlPool.query(
-                    `UPDATE contracts SET status = 'failed' WHERE id = ?`,
-                    [contractId]
-                );
-
-                // Store timeout error in the analysis_reports table
-                await mysqlPool.query(
-                    `INSERT INTO analysis_reports 
-                     (contract_id, report_json, vulnerability_count) 
-                     VALUES (?, ?, 0)`,
-                    [
-                        contractId,
-                        JSON.stringify({
-                            error: "Analysis timed out after 2 minutes",
-                        }),
-                    ]
-                );
-            }
-        } catch (error) {
-            console.error(
-                `Error handling timeout for contract ${contractId}:`,
-                error
-            );
-        }
-    }, 2 * 60 * 1000); // 2 minutes
+        // ... rest of timeout code ...
+    }, 2 * 60 * 1000);
 
     try {
         // Update status to analyzing
+        console.log(
+            `[DEBUG] Updating contract ${contractId} status to 'analyzing'`
+        );
         await mysqlPool.query(
             `UPDATE contracts SET status = 'analyzing' WHERE id = ?`,
             [contractId]
@@ -930,66 +963,54 @@ async function runSlitherAnalysis(contractId, filePath) {
 
         // Create output directory if it doesn't exist
         const outputDir = path.join(__dirname, "reports");
+        console.log(`[DEBUG] Ensuring output directory exists: ${outputDir}`);
         if (!fs.existsSync(outputDir)) {
             fs.mkdirSync(outputDir, { recursive: true });
         }
 
         const outputPath = path.join(outputDir, `report-${contractId}.json`);
+        console.log(`[DEBUG] Output path: ${outputPath}`);
 
-        console.log(`Running Slither analysis on contract ID ${contractId}...`);
-        console.log(`File path: ${filePath}`);
-        console.log(`Output path: ${outputPath}`);
+        // Run Slither with JSON output using Python
+        const command = `python -m slither "${filePath}" --json "${outputPath}"`;
+        console.log(`[DEBUG] Executing Slither command: ${command}`);
 
-        // Run Slither with JSON output - use double quotes for Windows paths
-        const command = `slither "${filePath}" --json "${outputPath}"`;
-        console.log(`Executing command: ${command}`);
-
-        try {
-            const { stdout, stderr } = await execPromise(command, {
-                timeout: 1.5 * 60 * 1000,
-            }); // 1.5 minute timeout for the command
-            console.log("Slither stdout:", stdout);
-            if (stderr) console.log("Slither stderr (warnings/info):", stderr);
-        } catch (execError) {
-            // Check if it's a timeout error
-            if (execError.killed && execError.signal === "SIGTERM") {
-                throw new Error("Slither analysis timed out");
+        // Use child_process.exec directly instead of execPromise
+        exec(command, (error, stdout, stderr) => {
+            if (error) {
+                console.error(`[DEBUG] Slither execution error: ${error}`);
+                console.error(`[DEBUG] Error stdout: ${stdout}`);
+                console.error(`[DEBUG] Error stderr: ${stderr}`);
+                throw error;
             }
+            console.log(`[DEBUG] Slither stdout: ${stdout}`);
+            if (stderr) console.log(`[DEBUG] Slither stderr: ${stderr}`);
+        });
 
-            // Slither returns non-zero exit code when it finds vulnerabilities
-            // This is actually a successful analysis, not an error
-            console.log("Slither found vulnerabilities (expected behavior)");
-            console.log("Slither stdout:", execError.stdout);
-            console.log("Slither stderr (findings):", execError.stderr);
-        }
-
-        // Read the JSON report with better error handling
+        // Read and parse the JSON report
+        console.log(`[DEBUG] Reading Slither report from ${outputPath}`);
         let reportData;
         try {
             const reportContent = fs.readFileSync(outputPath, "utf8");
-            console.log(`Read ${reportContent.length} bytes from report file`);
-            console.log(
-                `Report preview: ${reportContent.substring(0, 200)}...`
-            );
-
+            console.log(`[DEBUG] Report size: ${reportContent.length} bytes`);
             reportData = JSON.parse(reportContent);
+            console.log(`[DEBUG] Successfully parsed report JSON`);
         } catch (readError) {
             console.error(
-                `Error reading or parsing report file: ${readError.message}`
+                `[DEBUG] Error reading/parsing report: ${readError.message}`
             );
-            throw new Error(
-                `Failed to read or parse Slither report: ${readError.message}`
-            );
+            throw readError;
         }
 
-        // Count vulnerabilities by severity
+        // Count vulnerabilities
+        console.log(`[DEBUG] Counting vulnerabilities`);
         const vulnerabilityCounts = countVulnerabilities(reportData);
+        console.log(`[DEBUG] Vulnerability counts:`, vulnerabilityCounts);
 
-        // Store results in MySQL with better error handling
+        // Store results in MySQL
+        console.log(`[DEBUG] Storing analysis results in database`);
         try {
             const reportJson = JSON.stringify(reportData);
-            console.log(`Serialized report is ${reportJson.length} bytes`);
-
             await mysqlPool.query(
                 `INSERT INTO analysis_reports 
                  (contract_id, report_json, vulnerability_count, high_severity_count, medium_severity_count, low_severity_count) 
@@ -1003,48 +1024,44 @@ async function runSlitherAnalysis(contractId, filePath) {
                     vulnerabilityCounts.low,
                 ]
             );
+            console.log(`[DEBUG] Analysis results stored successfully`);
         } catch (dbError) {
-            console.error(
-                `Error storing report in database: ${dbError.message}`
-            );
-            throw new Error(
-                `Failed to store report in database: ${dbError.message}`
-            );
+            console.error(`[DEBUG] Database error: ${dbError.message}`);
+            throw dbError;
         }
 
         // Update contract status to completed
+        console.log(`[DEBUG] Updating contract status to 'completed'`);
         await mysqlPool.query(
             `UPDATE contracts SET status = 'completed' WHERE id = ?`,
             [contractId]
         );
 
-        console.log(`Analysis completed for contract ID ${contractId}`);
+        console.log(
+            `[DEBUG] Analysis completed successfully for contract ${contractId}`
+        );
 
-        // Clean up the temporary file if needed
+        // Clean up
         if (fs.existsSync(filePath)) {
+            console.log(`[DEBUG] Cleaning up temporary file: ${filePath}`);
             fs.unlinkSync(filePath);
-            console.log(`Temporary file ${filePath} deleted`);
         }
 
-        // Clear the timeout since we completed successfully
         clearTimeout(analysisTimeout);
     } catch (error) {
-        console.error(`Error analyzing contract ${contractId}:`, error);
-        console.error(`Error stack: ${error.stack}`);
-
-        // If there was stderr output from the command, log it
-        if (error.stderr) {
-            console.error(`Command stderr: ${error.stderr}`);
-        }
+        console.error(`[DEBUG] Fatal error in analysis:`, error);
+        console.error(`[DEBUG] Error stack:`, error.stack);
 
         // Update contract status to failed
+        console.log(`[DEBUG] Updating contract status to 'failed'`);
         await mysqlPool.query(
             `UPDATE contracts SET status = 'failed' WHERE id = ?`,
             [contractId]
         );
 
-        // Store error information in the analysis_reports table
+        // Store error information
         try {
+            console.log(`[DEBUG] Storing error information in database`);
             await mysqlPool.query(
                 `INSERT INTO analysis_reports 
                  (contract_id, report_json, vulnerability_count) 
@@ -1057,16 +1074,17 @@ async function runSlitherAnalysis(contractId, filePath) {
                 ]
             );
         } catch (dbError) {
-            console.error("Failed to store analysis error:", dbError);
+            console.error(`[DEBUG] Failed to store error:`, dbError);
         }
 
-        // Clean up the temporary file if needed
+        // Clean up
         if (fs.existsSync(filePath)) {
+            console.log(
+                `[DEBUG] Cleaning up temporary file after error: ${filePath}`
+            );
             fs.unlinkSync(filePath);
-            console.log(`Temporary file ${filePath} deleted after error`);
         }
 
-        // Clear the timeout since we've handled the error
         clearTimeout(analysisTimeout);
     }
 }

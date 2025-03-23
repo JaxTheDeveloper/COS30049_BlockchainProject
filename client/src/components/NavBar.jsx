@@ -274,7 +274,7 @@ function NavBar({ onSearch, onContractAnalysisComplete }) {
 
       {/* Search Bar */}
       <Container maxWidth={false} sx={{ maxWidth: '1400px !important' }}>
-        <Toolbar sx={{ px: { xs: 1, sm: 2 } }}>
+        <Toolbar sx={{ px: { xs: 1, sm: 2 }, py: 2 }}>
           <Box
             component="form"
             onSubmit={handleSubmit}
@@ -293,7 +293,18 @@ function NavBar({ onSearch, onContractAnalysisComplete }) {
                 minWidth: 120,
                 '& .MuiOutlinedInput-root': {
                   bgcolor: '#fff',
-                  borderRight: '1px solid #e7eaf3'
+                  borderRadius: '10px 0 0 10px',
+                  borderRight: 'none',
+                  '&:hover': {
+                    '& .MuiOutlinedInput-notchedOutline': {
+                      borderColor: '#3498db'
+                    }
+                  },
+                  '&.Mui-focused': {
+                    '& .MuiOutlinedInput-notchedOutline': {
+                      borderColor: '#3498db'
+                    }
+                  }
                 }
               }}
             >
@@ -301,6 +312,14 @@ function NavBar({ onSearch, onContractAnalysisComplete }) {
                 value={filter}
                 onChange={(e) => setFilter(e.target.value)}
                 size="small"
+                sx={{
+                  '& .MuiSelect-select': {
+                    py: 1.5,
+                    px: 2,
+                    color: '#1e2022',
+                    fontWeight: 500
+                  }
+                }}
               >
                 <MenuItem value="all">All Filters</MenuItem>
                 <MenuItem value="addresses">Addresses</MenuItem>
@@ -317,13 +336,40 @@ function NavBar({ onSearch, onContractAnalysisComplete }) {
               placeholder="Search by Address / Txn Hash / Block / Token"
               sx={{
                 '& .MuiOutlinedInput-root': {
-                  bgcolor: '#fff'
+                  bgcolor: '#fff',
+                  '&:hover': {
+                    '& .MuiOutlinedInput-notchedOutline': {
+                      borderColor: '#3498db'
+                    }
+                  },
+                  '&.Mui-focused': {
+                    '& .MuiOutlinedInput-notchedOutline': {
+                      borderColor: '#3498db'
+                    }
+                  },
+                  '& input': {
+                    py: 1.5,
+                    px: 2,
+                    '&::placeholder': {
+                      color: '#77838f',
+                      opacity: 0.7
+                    }
+                  }
                 }
               }}
               InputProps={{
                 endAdornment: (
                   <InputAdornment position="end">
-                    <IconButton type="submit" edge="end">
+                    <IconButton 
+                      type="submit" 
+                      edge="end"
+                      sx={{
+                        color: '#3498db',
+                        '&:hover': {
+                          bgcolor: 'rgba(52, 152, 219, 0.1)'
+                        }
+                      }}
+                    >
                       <SearchIcon />
                     </IconButton>
                   </InputAdornment>
@@ -333,16 +379,16 @@ function NavBar({ onSearch, onContractAnalysisComplete }) {
             
             <Button
               variant="contained"
-              color="secondary"
               startIcon={<CodeIcon />}
               onClick={() => setOpenUploadDialog(true)}
               sx={{
-                whiteSpace: 'nowrap',
-                minWidth: 'auto',
-                px: 2
+                bgcolor: '#3498db',
+                '&:hover': {
+                  bgcolor: '#2980b9'
+                }
               }}
             >
-              Analyze Contract
+              Analyze
             </Button>
           </Box>
         </Toolbar>
