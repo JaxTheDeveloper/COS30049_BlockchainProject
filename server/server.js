@@ -24,19 +24,8 @@ const ETHERSCAN_API_URL = "https://api.etherscan.io/api";
 // get coingecko api url
 const COINGECKO_API_URL = "https://api.coingecko.com/api/v3";
 
-// Configure multer for file uploads
-const storage = multer.diskStorage({
-    destination: function (req, file, cb) {
-        const uploadDir = path.join(__dirname, "uploads");
-        if (!fs.existsSync(uploadDir)) {
-            fs.mkdirSync(uploadDir, { recursive: true });
-        }
-        cb(null, uploadDir);
-    },
-    filename: function (req, file, cb) {
-        cb(null, Date.now() + "-" + file.originalname);
-    },
-});
+// Use memory storage instead of disk storage
+const storage = multer.memoryStorage();
 
 const upload = multer({
     storage: storage,
@@ -108,8 +97,8 @@ async function initializeMySQLTables() {
                 filename VARCHAR(255) NOT NULL,
                 filepath VARCHAR(255) NOT NULL,
                 contract_hashcode VARCHAR(64),
-                upload_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                status ENUM('pending', 'analyzing', 'completed', 'failed') DEFAULT 'pending'
+                status ENUM('pending', 'analyzing', 'completed', 'failed') DEFAULT 'pending',
+                upload_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         `);
 
@@ -118,19 +107,32 @@ async function initializeMySQLTables() {
             CREATE TABLE IF NOT EXISTS analysis_reports (
                 id INT AUTO_INCREMENT PRIMARY KEY,
                 contract_id INT NOT NULL,
-                report_json JSON,
+                report_json LONGTEXT NOT NULL,
                 vulnerability_count INT DEFAULT 0,
                 high_severity_count INT DEFAULT 0,
                 medium_severity_count INT DEFAULT 0,
                 low_severity_count INT DEFAULT 0,
                 completion_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (contract_id) REFERENCES contracts(id)
+                FOREIGN KEY (contract_id) REFERENCES contracts(id) ON DELETE CASCADE
+            )
+        `);
+
+        // Create AI recommendations table
+        await mysqlPool.query(`
+            CREATE TABLE IF NOT EXISTS ai_recommendations (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                report_id INT NOT NULL,
+                contract_id INT NOT NULL,
+                recommendation TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (report_id) REFERENCES analysis_reports(id) ON DELETE CASCADE,
+                FOREIGN KEY (contract_id) REFERENCES contracts(id) ON DELETE CASCADE
             )
         `);
 
         console.log("MySQL tables initialized successfully");
-    } catch (error) {
-        console.error("Error initializing MySQL tables:", error);
+    } catch (err) {
+        console.error("Error initializing MySQL tables:", err);
     }
 }
 
@@ -303,9 +305,7 @@ async function getEtherscanData(address, page = 1, offset = 10) {
                       from: tx.from,
                       to: tx.to,
                       value: (parseFloat(tx.value) / 1e18).toFixed(6),
-                      timestamp: new Date(
-                          parseInt(tx.timeStamp) * 1000
-                      ).toISOString(),
+                      timeStamp: tx.timeStamp,
                       gasPrice: tx.gasPrice,
                       gasUsed: tx.gasUsed,
                       isError: tx.isError === "1",
@@ -319,7 +319,7 @@ async function getEtherscanData(address, page = 1, offset = 10) {
             recentTransactions: transactions,
         };
     } catch (error) {
-        console.error("Etherscan API Error:", error.message);
+        console.error(`[MAIN] Etherscan API Error: ${error.message}`);
         throw new Error(`Failed to fetch wallet data: ${error.message}`);
     }
 }
@@ -363,6 +363,7 @@ async function getMarketData() {
     }
 }
 
+// Modify the wallet endpoint to handle the initial fetch
 app.get("/api/wallet/:address", async (req, res) => {
     const { address } = req.params;
 
@@ -377,7 +378,7 @@ app.get("/api/wallet/:address", async (req, res) => {
             throw new Error("Database connection not available");
         }
 
-        // Get wallet data from Etherscan
+        // Get wallet data from Etherscan (first 10 transactions)
         const walletData = await getEtherscanData(address);
 
         const session = neo4jDriver.session();
@@ -386,7 +387,8 @@ app.get("/api/wallet/:address", async (req, res) => {
             await session.run(
                 `MERGE (w:Address {address: $address})
                  SET w.balance = $balance,
-                     w.transactionCount = $transactionCount`,
+                     w.transactionCount = $transactionCount,
+                     w.lastUpdated = datetime()`,
                 {
                     address: walletData.address,
                     balance: walletData.balance,
@@ -397,17 +399,9 @@ app.get("/api/wallet/:address", async (req, res) => {
             // Process each transaction
             for (const tx of walletData.recentTransactions) {
                 // Ensure both addresses exist
-
-                console.log(
-                    "balace:",
-                    (await getEtherscanData(tx.from)).balance
-                );
-
                 await session.run(
                     `MERGE (from:Address {address: $fromAddress})
-                     ON CREATE SET from.transactionCount = "$fromTransactionCount", from.balance = "$fromBalance"
-                     MERGE (to:Address {address: $toAddress})
-                     ON CREATE SET to.transactionCount = "$toTransactionCount", to.balance = "$toBalance"`,
+                     MERGE (to:Address {address: $toAddress})`,
                     {
                         fromAddress: tx.from,
                         // fromTransactionCount: getEtherscanData(tx.from, 1, 0).transactionCount,
@@ -470,16 +464,7 @@ app.get("/api/wallet/:address", async (req, res) => {
                 }
             }
 
-            // delete lonely nodes
-            await session.run(
-                `
-                MATCH (a:Address)
-                 WHERE NOT (a)-[:HAS_TRANSACTION]-() 
-                 DETACH DELETE a;
-                `
-            );
-
-            // Return the same response format
+            // Return the same response format with additional info about background processing
             return res.json({
                 address: walletData.address,
                 balance: walletData.balance,
@@ -765,7 +750,7 @@ app.get("/api/debug/graph/:address", async (req, res) => {
     }
 });
 
-// handling contract uploads
+// Then modify the upload-contract endpoint to handle in-memory files
 app.post(
     "/api/upload-contract",
     upload.single("contract"),
@@ -784,7 +769,6 @@ app.post(
             }
 
             // Calculate SHA256 hash of the contract contents
-            const fileContent = fs.readFileSync(req.file.path, "utf8");
             const hash = crypto
                 .createHash("sha256")
                 .update(fileContent)
@@ -793,20 +777,20 @@ app.post(
             // Insert contract info into MySQL
             const [result] = await mysqlPool.query(
                 `INSERT INTO contracts (name, address, filename, filepath, contract_hashcode, status) 
-             VALUES (?, ?, ?, ?, ?, 'pending')`,
+                VALUES (?, ?, ?, ?, ?, 'pending')`,
                 [
                     name,
                     address || null,
                     req.file.originalname,
-                    req.file.path,
+                    tempFilePath, // Use the temporary file path
                     hash,
                 ]
             );
 
             const contractId = result.insertId;
 
-            // Start Slither analysis in the background
-            runSlitherAnalysis(contractId, req.file.path);
+            // Start Slither analysis in the background using the temporary file
+            runSlitherAnalysis(contractId, tempFilePath, true); // Pass true to indicate it's a temp file
 
             res.status(201).json({
                 message: "Contract uploaded successfully",
@@ -971,6 +955,12 @@ async function runSlitherAnalysis(contractId, filePath) {
 
         console.log(`Analysis completed for contract ID ${contractId}`);
 
+        // Clean up the temporary file if needed
+        if (isTemporary && fs.existsSync(filePath)) {
+            fs.unlinkSync(filePath);
+            console.log(`Temporary file ${filePath} deleted`);
+        }
+
         // Clear the timeout since we completed successfully
         clearTimeout(analysisTimeout);
     } catch (error) {
@@ -1003,6 +993,12 @@ async function runSlitherAnalysis(contractId, filePath) {
             );
         } catch (dbError) {
             console.error("Failed to store analysis error:", dbError);
+        }
+
+        // Clean up the temporary file if needed
+        if (isTemporary && fs.existsSync(filePath)) {
+            fs.unlinkSync(filePath);
+            console.log(`Temporary file ${filePath} deleted after error`);
         }
 
         // Clear the timeout since we've handled the error
