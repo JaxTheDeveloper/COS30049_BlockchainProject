@@ -995,8 +995,6 @@ async function runSlitherAnalysis(contractId, filePath) {
     console.log(`[DEBUG] Starting Slither analysis for contract ${contractId}`);
     console.log(`[DEBUG] File path: ${filePath}`);
 
-<<<<<<< HEAD
-=======
     // Set a timeout for the entire analysis process (2 minutes)
     const analysisTimeout = setTimeout(async () => {
         console.error(
@@ -1021,7 +1019,6 @@ async function runSlitherAnalysis(contractId, filePath) {
         );
     }, 2 * 60 * 1000);
 
->>>>>>> multithreaded-worker-explorer
     try {
         // Update status to analyzing
         console.log(
@@ -1063,22 +1060,6 @@ async function runSlitherAnalysis(contractId, filePath) {
         console.log(`[DEBUG] Output path: ${outputPath}`);
 
         // Run Slither with JSON output using Python
-<<<<<<< HEAD
-        const command = `python -m slither "${filePath}" --json "${outputPath}" --checklist`;
-        console.log(`[DEBUG] Executing Slither command: ${command}`);
-
-        try {
-            const { stdout, stderr } = await execPromise(command);
-            console.log("[DEBUG] Slither stdout:", stdout);
-            if (stderr) console.log("[DEBUG] Slither stderr:", stderr);
-
-            // Check if the report file exists and has content
-            if (!fs.existsSync(outputPath)) {
-                throw new Error(
-                    "Slither analysis failed - no output file generated"
-                );
-            }
-=======
         const normalizedFilePath = path.normalize(filePath);
         const normalizedOutputPath = path.normalize(outputPath);
         const command = `python -m slither "${normalizedFilePath}" --json "${normalizedOutputPath}"`;
@@ -1093,66 +1074,39 @@ async function runSlitherAnalysis(contractId, filePath) {
             console.error(`[DEBUG] Slither execution error:`, execError);
             throw execError;
         }
->>>>>>> multithreaded-worker-explorer
 
-            const reportContent = fs.readFileSync(outputPath, "utf8");
-            if (!reportContent.trim()) {
-                throw new Error("Slither analysis failed - empty output file");
-            }
-
-            // Parse the JSON report
-            console.log(`[DEBUG] Reading Slither report from ${outputPath}`);
-            const reportData = JSON.parse(reportContent);
-            console.log(`[DEBUG] Successfully parsed report JSON`);
-
-            // Count vulnerabilities
-            console.log(`[DEBUG] Counting vulnerabilities`);
-            const vulnerabilityCounts = countVulnerabilities(reportData);
-            console.log(`[DEBUG] Vulnerability counts:`, vulnerabilityCounts);
-
-            // Store results in MySQL
-            console.log(`[DEBUG] Storing analysis results in database`);
-            await mysqlPool.query(
-                `INSERT INTO analysis_reports 
-                 (contract_id, report_json, vulnerability_count, high_severity_count, medium_severity_count, low_severity_count) 
-                 VALUES (?, ?, ?, ?, ?, ?)`,
-                [
-                    contractId,
-                    JSON.stringify(reportData),
-                    vulnerabilityCounts.total,
-                    vulnerabilityCounts.high,
-                    vulnerabilityCounts.medium,
-                    vulnerabilityCounts.low,
-                ]
-            );
-            console.log(`[DEBUG] Analysis results stored successfully`);
-
-            // Update contract status to completed
-            console.log(`[DEBUG] Updating contract status to 'completed'`);
-            await mysqlPool.query(
-                `UPDATE contracts SET status = 'completed' WHERE id = ?`,
-                [contractId]
-            );
-
-            console.log(
-                `[DEBUG] Analysis completed successfully for contract ${contractId}`
-            );
-        } catch (execError) {
-            console.error(`[DEBUG] Slither execution error:`, execError);
-            throw new Error(`Slither analysis failed: ${execError.message}`);
+        const reportContent = fs.readFileSync(outputPath, "utf8");
+        if (!reportContent.trim()) {
+            throw new Error("Slither analysis failed - empty output file");
         }
 
-<<<<<<< HEAD
-        // Clean up
-        if (fs.existsSync(filePath)) {
-            console.log(`[DEBUG] Cleaning up temporary file: ${filePath}`);
-            fs.unlinkSync(filePath);
-        }
-        if (fs.existsSync(outputPath)) {
-            console.log(`[DEBUG] Cleaning up output file: ${outputPath}`);
-            fs.unlinkSync(outputPath);
-        }
-=======
+        // Parse the JSON report
+        console.log(`[DEBUG] Reading Slither report from ${outputPath}`);
+        const reportData = JSON.parse(reportContent);
+        console.log(`[DEBUG] Successfully parsed report JSON`);
+
+        // Count vulnerabilities
+        console.log(`[DEBUG] Counting vulnerabilities`);
+        const vulnerabilityCounts = countVulnerabilities(reportData);
+        console.log(`[DEBUG] Vulnerability counts:`, vulnerabilityCounts);
+
+        // Store results in MySQL
+        console.log(`[DEBUG] Storing analysis results in database`);
+        await mysqlPool.query(
+            `INSERT INTO analysis_reports 
+             (contract_id, report_json, vulnerability_count, high_severity_count, medium_severity_count, low_severity_count) 
+             VALUES (?, ?, ?, ?, ?, ?)`,
+            [
+                contractId,
+                JSON.stringify(reportData),
+                vulnerabilityCounts.total,
+                vulnerabilityCounts.high,
+                vulnerabilityCounts.medium,
+                vulnerabilityCounts.low,
+            ]
+        );
+        console.log(`[DEBUG] Analysis results stored successfully`);
+
         // Update contract status to completed
         console.log(`[DEBUG] Updating contract status to 'completed'`);
         await mysqlPool.query(
@@ -1164,14 +1118,7 @@ async function runSlitherAnalysis(contractId, filePath) {
             `[DEBUG] Analysis completed successfully for contract ${contractId}`
         );
 
-        // No need to clean up the file if we want to be able to re-run the analysis later
-        // if (fs.existsSync(filePath)) {
-        //    console.log(`[DEBUG] Cleaning up temporary file: ${filePath}`);
-        //    fs.unlinkSync(filePath);
-        // }
-
         clearTimeout(analysisTimeout);
->>>>>>> multithreaded-worker-explorer
     } catch (error) {
         console.error(`[DEBUG] Fatal error in analysis:`, error);
         console.error(`[DEBUG] Error stack:`, error.stack);
@@ -1203,31 +1150,7 @@ async function runSlitherAnalysis(contractId, filePath) {
             console.error(`[DEBUG] Failed to store error:`, dbError);
         }
 
-<<<<<<< HEAD
-        // Clean up
-        if (fs.existsSync(filePath)) {
-            console.log(
-                `[DEBUG] Cleaning up temporary file after error: ${filePath}`
-            );
-            fs.unlinkSync(filePath);
-        }
-        if (fs.existsSync(outputPath)) {
-            console.log(
-                `[DEBUG] Cleaning up output file after error: ${outputPath}`
-            );
-            fs.unlinkSync(outputPath);
-        }
-=======
-        // No cleanup for now to retain the file for debugging
-        // if (fs.existsSync(filePath)) {
-        //     console.log(
-        //         `[DEBUG] Cleaning up temporary file after error: ${filePath}`
-        //     );
-        //     fs.unlinkSync(filePath);
-        // }
-
         clearTimeout(analysisTimeout);
->>>>>>> multithreaded-worker-explorer
     }
 }
 
