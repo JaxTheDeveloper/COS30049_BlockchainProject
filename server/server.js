@@ -14,6 +14,7 @@ const util = require("util");
 const execPromise = util.promisify(exec);
 const crypto = require("crypto");
 const NodeCache = require("node-cache");
+const os = require('os');
 // i dont know
 // config dotenv
 dotenv.config();
@@ -745,759 +746,6 @@ async function fetchContractSource(address) {
     }
 }
 
-// handling contract uploads
-app.post(
-    "/api/upload-contract",
-    upload.single("contract"),
-    async (req, res) => {
-        console.log("[DEBUG] Contract upload started");
-        try {
-            const { name, address } = req.body;
-            console.log("[DEBUG] Contract name:", name);
-            console.log("[DEBUG] Contract address:", address);
-
-            if (!name) {
-                console.log("[DEBUG] Contract name missing");
-                return res
-                    .status(400)
-                    .json({ error: "Contract name is required" });
-            }
-
-            // Create uploads directory if it doesn't exist
-            const uploadDir = path.join(__dirname, "uploads");
-            console.log("[DEBUG] Upload directory:", uploadDir);
-            if (!fs.existsSync(uploadDir)) {
-                console.log("[DEBUG] Creating upload directory");
-                fs.mkdirSync(uploadDir, { recursive: true });
-            }
-
-            let contractSource;
-            let filename;
-            let filepath;
-            let hash;
-
-            // Handle contract upload by address
-            if (address && !req.file) {
-                console.log("[DEBUG] Processing contract by address");
-                try {
-                    // Fetch source code from Etherscan
-                    contractSource = await fetchContractSource(address);
-                    console.log(
-                        "[DEBUG] Contract source fetched from Etherscan"
-                    );
-
-                    // Create filename and save to disk
-                    filename = `${Date.now()}-${address}.sol`;
-                    filepath = path.join(uploadDir, filename);
-                    console.log("[DEBUG] File path:", filepath);
-
-                    // Write source code to file
-                    fs.writeFileSync(filepath, contractSource);
-                    console.log("[DEBUG] Contract source written to file");
-
-                    // Calculate hash from normalized source code
-                    hash = crypto
-                        .createHash("sha256")
-                        .update(normalizeSourceCode(contractSource))
-                        .digest("hex");
-                    console.log("[DEBUG] Contract hash:", hash);
-                } catch (error) {
-                    console.log(
-                        "[DEBUG] Error processing contract by address:",
-                        error
-                    );
-                    return res.status(400).json({ error: error.message });
-                }
-            }
-            // Handle file upload
-            else if (req.file) {
-                console.log("[DEBUG] Processing uploaded contract file");
-                if (!req.file.originalname.endsWith(".sol")) {
-                    console.log("[DEBUG] Invalid file type");
-                    return res.status(400).json({
-                        error: "Only Solidity (.sol) files are allowed",
-                    });
-                }
-
-                filename = Date.now() + "-" + req.file.originalname;
-                filepath = path.join(uploadDir, filename);
-                console.log("[DEBUG] File path:", filepath);
-
-                // Write the buffer to file
-                fs.writeFileSync(filepath, req.file.buffer);
-                console.log("[DEBUG] Contract file written to disk");
-
-                // Calculate hash from normalized buffer content
-                hash = crypto
-                    .createHash("sha256")
-                    .update(normalizeSourceCode(req.file.buffer.toString()))
-                    .digest("hex");
-                console.log("[DEBUG] Contract hash:", hash);
-            } else {
-                console.log("[DEBUG] No contract source provided");
-                return res.status(400).json({
-                    error: "Either a contract file or address must be provided",
-                });
-            }
-
-            // Check if contract with same hash exists
-            console.log("[DEBUG] Checking for existing contract");
-            const [existingContracts] = await mysqlPool.query(
-                "SELECT id, status FROM contracts WHERE contract_hashcode = ?",
-                [hash]
-            );
-
-            let contractId;
-
-            if (existingContracts.length > 0) {
-                console.log("[DEBUG] Contract already exists");
-                const existingContract = existingContracts[0];
-                contractId = existingContract.id;
-
-                // If the contract exists but failed, re-run the analysis
-                if (existingContract.status === "failed") {
-                    console.log(
-                        "[DEBUG] Contract exists but failed, re-running analysis"
-                    );
-                    // Update status to pending
-                    await mysqlPool.query(
-                        `UPDATE contracts SET status = 'pending' WHERE id = ?`,
-                        [contractId]
-                    );
-                    // Start Slither analysis in the background
-                    console.log(
-                        "[DEBUG] Starting Slither analysis for failed contract",
-                        contractId
-                    );
-                    runSlitherAnalysis(contractId, filepath).catch((error) => {
-                        console.error(
-                            "[DEBUG] Error in Slither analysis:",
-                            error
-                        );
-                    });
-                    console.log(
-                        "[DEBUG] Slither analysis initiated for failed contract"
-                    );
-                }
-
-                // Add to upload history with explicit timestamp
-                await mysqlPool.query(
-                    `INSERT INTO upload_history (contract_hash, upload_date) 
-                     VALUES (?, NOW())`,
-                    [hash]
-                );
-                console.log("[DEBUG] Added to upload history");
-
-                // Delete the temporary file since we already have this contract
-                if (fs.existsSync(filepath)) {
-                    fs.unlinkSync(filepath);
-                    console.log("[DEBUG] Temporary file deleted");
-                }
-            } else {
-                console.log("[DEBUG] New contract, inserting into database");
-                // Insert new contract
-                const [result] = await mysqlPool.query(
-                    `INSERT INTO contracts (name, address, filename, filepath, contract_hashcode, status) 
-                    VALUES (?, ?, ?, ?, ?, 'pending')`,
-                    [name, address || null, filename, filepath, hash]
-                );
-
-                contractId = result.insertId;
-                console.log("[DEBUG] Contract inserted, ID:", contractId);
-
-                // Add to upload history with explicit timestamp
-                await mysqlPool.query(
-                    `INSERT INTO upload_history (contract_hash, upload_date) 
-                     VALUES (?, NOW())`,
-                    [hash]
-                );
-                console.log("[DEBUG] Added to upload history");
-
-                // Start Slither analysis in the background
-                console.log(
-                    "[DEBUG] Starting Slither analysis for contract",
-                    contractId
-                );
-                runSlitherAnalysis(contractId, filepath).catch((error) => {
-                    console.error("[DEBUG] Error in Slither analysis:", error);
-                });
-                console.log("[DEBUG] Slither analysis initiated");
-            }
-
-            console.log("[DEBUG] Sending success response");
-            res.status(201).json({
-                message: "Contract processed successfully",
-                contractId: contractId,
-                status: "pending",
-                hash: hash,
-            });
-        } catch (error) {
-            console.error("[DEBUG] Error in contract upload:", error);
-            res.status(500).json({ error: "Failed to upload contract" });
-        }
-    }
-);
-
-// Function to run Slither analysis with timeout
-async function runSlitherAnalysis(contractId, filePath) {
-    console.log(`[DEBUG] Starting Slither analysis for contract ${contractId}`);
-    console.log(`[DEBUG] File path: ${filePath}`);
-
-    try {
-        // Update status to analyzing
-        console.log(
-            `[DEBUG] Updating contract ${contractId} status to 'analyzing'`
-        );
-        await mysqlPool.query(
-            `UPDATE contracts SET status = 'analyzing' WHERE id = ?`,
-            [contractId]
-        );
-
-        // Create output directory if it doesn't exist
-        const outputDir = path.join(__dirname, "reports");
-        console.log(`[DEBUG] Ensuring output directory exists: ${outputDir}`);
-        if (!fs.existsSync(outputDir)) {
-            fs.mkdirSync(outputDir, { recursive: true });
-        }
-
-        const outputPath = path.join(outputDir, `report-${contractId}.json`);
-        console.log(`[DEBUG] Output path: ${outputPath}`);
-
-        // Run Slither with JSON output using Python
-        const command = `python -m slither "${filePath}" --json "${outputPath}" --checklist`;
-        console.log(`[DEBUG] Executing Slither command: ${command}`);
-
-        try {
-            const { stdout, stderr } = await execPromise(command);
-            console.log("[DEBUG] Slither stdout:", stdout);
-            if (stderr) console.log("[DEBUG] Slither stderr:", stderr);
-
-            // Check if the report file exists and has content
-            if (!fs.existsSync(outputPath)) {
-                throw new Error(
-                    "Slither analysis failed - no output file generated"
-                );
-            }
-
-            const reportContent = fs.readFileSync(outputPath, "utf8");
-            if (!reportContent.trim()) {
-                throw new Error("Slither analysis failed - empty output file");
-            }
-
-            // Parse the JSON report
-            console.log(`[DEBUG] Reading Slither report from ${outputPath}`);
-            const reportData = JSON.parse(reportContent);
-            console.log(`[DEBUG] Successfully parsed report JSON`);
-
-            // Count vulnerabilities
-            console.log(`[DEBUG] Counting vulnerabilities`);
-            const vulnerabilityCounts = countVulnerabilities(reportData);
-            console.log(`[DEBUG] Vulnerability counts:`, vulnerabilityCounts);
-
-            // Store results in MySQL
-            console.log(`[DEBUG] Storing analysis results in database`);
-            await mysqlPool.query(
-                `INSERT INTO analysis_reports 
-                 (contract_id, report_json, vulnerability_count, high_severity_count, medium_severity_count, low_severity_count) 
-                 VALUES (?, ?, ?, ?, ?, ?)`,
-                [
-                    contractId,
-                    JSON.stringify(reportData),
-                    vulnerabilityCounts.total,
-                    vulnerabilityCounts.high,
-                    vulnerabilityCounts.medium,
-                    vulnerabilityCounts.low,
-                ]
-            );
-            console.log(`[DEBUG] Analysis results stored successfully`);
-
-            // Update contract status to completed
-            console.log(`[DEBUG] Updating contract status to 'completed'`);
-            await mysqlPool.query(
-                `UPDATE contracts SET status = 'completed' WHERE id = ?`,
-                [contractId]
-            );
-
-            console.log(
-                `[DEBUG] Analysis completed successfully for contract ${contractId}`
-            );
-        } catch (execError) {
-            console.error(`[DEBUG] Slither execution error:`, execError);
-            throw new Error(`Slither analysis failed: ${execError.message}`);
-        }
-
-        // Clean up
-        if (fs.existsSync(filePath)) {
-            console.log(`[DEBUG] Cleaning up temporary file: ${filePath}`);
-            fs.unlinkSync(filePath);
-        }
-        if (fs.existsSync(outputPath)) {
-            console.log(`[DEBUG] Cleaning up output file: ${outputPath}`);
-            fs.unlinkSync(outputPath);
-        }
-    } catch (error) {
-        console.error(`[DEBUG] Fatal error in analysis:`, error);
-        console.error(`[DEBUG] Error stack:`, error.stack);
-
-        // Update contract status to failed
-        console.log(`[DEBUG] Updating contract status to 'failed'`);
-        await mysqlPool.query(
-            `UPDATE contracts SET status = 'failed' WHERE id = ?`,
-            [contractId]
-        );
-
-        // Store error information
-        try {
-            console.log(`[DEBUG] Storing error information in database`);
-            await mysqlPool.query(
-                `INSERT INTO analysis_reports 
-                 (contract_id, report_json, vulnerability_count) 
-                 VALUES (?, ?, 0)`,
-                [
-                    contractId,
-                    JSON.stringify({
-                        error: error.message || "Unknown error during analysis",
-                        stdout: error.stdout,
-                        stderr: error.stderr,
-                    }),
-                ]
-            );
-        } catch (dbError) {
-            console.error(`[DEBUG] Failed to store error:`, dbError);
-        }
-
-        // Clean up
-        if (fs.existsSync(filePath)) {
-            console.log(
-                `[DEBUG] Cleaning up temporary file after error: ${filePath}`
-            );
-            fs.unlinkSync(filePath);
-        }
-        if (fs.existsSync(outputPath)) {
-            console.log(
-                `[DEBUG] Cleaning up output file after error: ${outputPath}`
-            );
-            fs.unlinkSync(outputPath);
-        }
-    }
-}
-
-// Helper function to count vulnerabilities by severity
-function countVulnerabilities(reportData) {
-    const counts = {
-        high: 0,
-        medium: 0,
-        low: 0,
-        total: 0,
-    };
-
-    if (reportData && reportData.results && reportData.results.detectors) {
-        reportData.results.detectors.forEach((finding) => {
-            counts.total++;
-            const impact = finding.impact
-                ? finding.impact.toLowerCase()
-                : "low";
-
-            switch (impact) {
-                case "high":
-                    counts.high++;
-                    break;
-                case "medium":
-                    counts.medium++;
-                    break;
-                case "low":
-                    counts.low++;
-                    break;
-            }
-        });
-    }
-
-    return counts;
-}
-
-// Get report by contract ID with improved error handling
-app.get("/api/contract/:contractId/report", async (req, res) => {
-    try {
-        const { contractId } = req.params;
-        console.log(
-            `\n[DEBUG] ==================== CONTRACT REPORT REQUEST ====================`
-        );
-        console.log(`[DEBUG] Starting report fetch for contract ${contractId}`);
-
-        // First get the contract and its latest report in a single query
-        const [results] = await mysqlPool.query(
-            `SELECT c.*, ar.report_json, ar.vulnerability_count, 
-                    ar.high_severity_count, ar.medium_severity_count, 
-                    ar.low_severity_count, ar.completion_date,
-                    (SELECT MAX(upload_date) FROM contracts WHERE id = c.id) as last_upload_date
-             FROM contracts c
-             LEFT JOIN analysis_reports ar ON c.id = ar.contract_id
-             WHERE c.id = ?
-             ORDER BY ar.completion_date DESC
-             LIMIT 1`,
-            [contractId]
-        );
-
-        if (results.length === 0) {
-            console.log(`[DEBUG] No contract found with ID ${contractId}`);
-            return res.status(404).json({ error: "Contract not found" });
-        }
-
-        const contract = results[0];
-        console.log(`[DEBUG] Contract found. Status: ${contract.status}`);
-        console.log(`[DEBUG] Last upload date: ${contract.last_upload_date}`);
-
-        // Try to read source code if available
-        let sourceCode = "";
-        try {
-            console.log(
-                `[DEBUG] Attempting to read source code for contract ${contractId}`
-            );
-            console.log(`[DEBUG] Contract filepath:`, contract.filepath);
-
-            if (!contract.filepath) {
-                console.log(`[DEBUG] No filepath found in contract record`);
-            } else if (!fs.existsSync(contract.filepath)) {
-                console.log(
-                    `[DEBUG] File does not exist at path: ${contract.filepath}`
-                );
-            } else {
-                sourceCode = fs.readFileSync(contract.filepath, "utf8");
-                console.log(
-                    `[DEBUG] Successfully read source code from ${contract.filepath}`
-                );
-                console.log(
-                    `[DEBUG] Source code length: ${sourceCode.length} characters`
-                );
-                console.log(
-                    `[DEBUG] First 100 characters: ${sourceCode.substring(
-                        0,
-                        100
-                    )}...`
-                );
-            }
-        } catch (error) {
-            console.error(`[DEBUG] Error reading source code:`, error);
-            console.error(`[DEBUG] Error stack:`, error.stack);
-        }
-
-        // If contract is still pending or analyzing, return basic info
-        if (contract.status === "pending" || contract.status === "analyzing") {
-            console.log(
-                `[DEBUG] Contract is ${contract.status}, returning basic info`
-            );
-            return res.json({
-                id: contract.id,
-                contract_name: contract.name,
-                filename: contract.filename,
-                contract_address: contract.address,
-                source_code: sourceCode,
-                upload_date: contract.upload_date,
-                last_upload_date: contract.last_upload_date,
-                status: contract.status,
-                risk_score: 0,
-                vulnerability_summary: {
-                    total: 0,
-                    high_severity: 0,
-                    medium_severity: 0,
-                    low_severity: 0,
-                },
-                vulnerabilities: [],
-            });
-        }
-
-        // Process report data if available
-        console.log(`[DEBUG] Processing report data`);
-        let vulnerabilities = [];
-        let vulnerabilitySummary = {
-            total: contract.vulnerability_count || 0,
-            high_severity: contract.high_severity_count || 0,
-            medium_severity: contract.medium_severity_count || 0,
-            low_severity: contract.low_severity_count || 0,
-        };
-        console.log(
-            `[DEBUG] Vulnerability summary from database:`,
-            vulnerabilitySummary
-        );
-
-        let riskScore = 0;
-        let reportData = null;
-
-        if (contract.report_json) {
-            try {
-                console.log(
-                    `[DEBUG] Processing report_json:`,
-                    contract.report_json,
-                    typeof contract.report_json
-                );
-                // Handle both string and object cases
-                reportData =
-                    typeof contract.report_json === "string"
-                        ? JSON.parse(contract.report_json)
-                        : contract.report_json;
-
-                console.log(`[DEBUG] Report data structure:`, {
-                    hasResults: !!reportData.results,
-                    hasDetectors: !!reportData.results?.detectors,
-                    detectorsCount: reportData.results?.detectors?.length || 0,
-                });
-
-                if (reportData.results && reportData.results.detectors) {
-                    console.log(
-                        `[DEBUG] Processing ${reportData.results.detectors.length} detectors`
-                    );
-                    vulnerabilities = reportData.results.detectors.map(
-                        (finding) => {
-                            console.log(`[DEBUG] Processing finding:`, {
-                                check: finding.check,
-                                impact: finding.impact,
-                                elements: Array.isArray(finding.elements)
-                                    ? finding.elements.length
-                                    : "N/A",
-                            });
-
-                            // Categorize findings based on impact and check type
-                            const category =
-                                finding.impact === "Informational"
-                                    ? "informational"
-                                    : finding.impact === "Optimization"
-                                    ? "optimization"
-                                    : "vulnerability";
-
-                            return {
-                                title: finding.check,
-                                description:
-                                    finding.description || finding.message,
-                                severity: finding.impact || "Low",
-                                confidence: finding.confidence || "Medium",
-                                category: category,
-                                elements: finding.elements || [],
-                                lines:
-                                    finding.elements
-                                        ?.map(
-                                            (elem) =>
-                                                elem.source_mapping?.lines || []
-                                        )
-                                        .flat() || [],
-                            };
-                        }
-                    );
-
-                    // Separate findings by category
-                    const categorizedFindings = {
-                        vulnerabilities: vulnerabilities.filter(
-                            (f) => f.category === "vulnerability"
-                        ),
-                        informational: vulnerabilities.filter(
-                            (f) => f.category === "informational"
-                        ),
-                        optimization: vulnerabilities.filter(
-                            (f) => f.category === "optimization"
-                        ),
-                    };
-
-                    // Calculate risk score based only on vulnerability findings
-                    riskScore = Math.min(
-                        100,
-                        categorizedFindings.vulnerabilities.filter(
-                            (v) => v.severity === "High"
-                        ).length *
-                            10 +
-                            categorizedFindings.vulnerabilities.filter(
-                                (v) => v.severity === "Medium"
-                            ).length *
-                                5 +
-                            categorizedFindings.vulnerabilities.filter(
-                                (v) => v.severity === "Low"
-                            ).length *
-                                2
-                    );
-                    console.log(`[DEBUG] Calculated risk score: ${riskScore}`);
-                }
-            } catch (error) {
-                console.error(`[DEBUG] Error processing report data:`, error);
-                console.log(`[DEBUG] Raw report_json:`, contract.report_json);
-            }
-        }
-
-        // Prepare final response
-        const responseData = {
-            id: contract.id,
-            contract_name: contract.name,
-            filename: contract.filename,
-            contract_address: contract.address,
-            source_code: sourceCode,
-            upload_date: contract.upload_date,
-            last_upload_date: contract.last_upload_date,
-            status: contract.status,
-            risk_score: riskScore,
-            vulnerability_summary: vulnerabilitySummary,
-            findings: {
-                contract_name: contract.name,
-                vulnerabilities:
-                    vulnerabilities.filter(
-                        (f) => f.category === "vulnerability"
-                    ) || [],
-                informational:
-                    vulnerabilities.filter(
-                        (f) => f.category === "informational"
-                    ) || [],
-                optimization:
-                    vulnerabilities.filter(
-                        (f) => f.category === "optimization"
-                    ) || [],
-            },
-        };
-
-        console.log(`[DEBUG] Response summary:`);
-        console.log(`- Status: ${responseData.status}`);
-        console.log(`- Risk score: ${responseData.risk_score}`);
-        console.log(`- Vulnerabilities found: ${vulnerabilities.length}`);
-        console.log(
-            `[DEBUG] ==================== END CONTRACT REPORT REQUEST ====================\n`
-        );
-
-        res.json(responseData);
-    } catch (error) {
-        console.error("[DEBUG] Error retrieving contract report:", error);
-        console.error("[DEBUG] Error stack:", error.stack);
-        res.status(500).json({ error: "Failed to retrieve contract report" });
-    }
-});
-
-// Improved debug endpoint
-app.get("/api/report/:reportId/debug", async (req, res) => {
-    try {
-        const { reportId } = req.params;
-
-        console.log(`Fetching report with ID: ${reportId}`);
-
-        // Get the report from MySQL
-        const [reports] = await mysqlPool.query(
-            `SELECT ar.*, c.name as contract_name, c.address as contract_address, c.filename
-             FROM analysis_reports ar
-             JOIN contracts c ON ar.contract_id = c.id
-             WHERE ar.id = ?`,
-            [reportId]
-        );
-
-        console.log(`Found ${reports.length} reports`);
-
-        if (reports.length === 0) {
-            return res.status(404).json({ error: "Report not found" });
-        }
-
-        const report = reports[0];
-        console.log(
-            `Report for contract: ${report.contract_name}, ID: ${report.contract_id}`
-        );
-
-        // Return the raw report for debugging
-        res.json({
-            reportId: report.id,
-            contractId: report.contract_id,
-            contractName: report.contract_name,
-            rawReportString: report.report_json, // Return as string without parsing
-            reportLength: report.report_json ? report.report_json.length : 0,
-            vulnerabilityCounts: {
-                total: report.vulnerability_count,
-                high: report.high_severity_count,
-                medium: report.medium_severity_count,
-                low: report.low_severity_count,
-            },
-        });
-    } catch (error) {
-        console.error("Error retrieving report:", error);
-        res.status(500).json({
-            error: "Failed to retrieve report",
-            details: error.message,
-        });
-    }
-});
-
-// Endpoint to reset a stuck analysis
-app.post("/api/contract/:contractId/reset", async (req, res) => {
-    try {
-        const { contractId } = req.params;
-
-        // Check if contract exists and is in analyzing state
-        const [contracts] = await mysqlPool.query(
-            `SELECT id, filepath, status FROM contracts WHERE id = ? AND status = 'analyzing'`,
-            [contractId]
-        );
-
-        if (contracts.length === 0) {
-            return res.status(404).json({
-                error: "Contract not found or not in 'analyzing' state",
-            });
-        }
-
-        const contract = contracts[0];
-
-        // Update status to pending
-        await mysqlPool.query(
-            `UPDATE contracts SET status = 'pending' WHERE id = ?`,
-            [contractId]
-        );
-
-        // Start analysis again
-        runSlitherAnalysis(contractId, contract.filepath);
-
-        res.json({
-            message: "Analysis reset and restarted",
-            contractId: contractId,
-            status: "pending",
-        });
-    } catch (error) {
-        console.error("Error resetting analysis:", error);
-        res.status(500).json({ error: "Failed to reset analysis" });
-    }
-});
-
-// Add this endpoint for direct file reading
-app.get("/api/report-file/:contractId", async (req, res) => {
-    try {
-        const { contractId } = req.params;
-        const reportPath = path.join(
-            __dirname,
-            "reports",
-            `report-${contractId}.json`
-        );
-
-        console.log(`Attempting to read report file: ${reportPath}`);
-
-        if (!fs.existsSync(reportPath)) {
-            return res.status(404).json({ error: "Report file not found" });
-        }
-
-        const fileContent = fs.readFileSync(reportPath, "utf8");
-        console.log(`Read ${fileContent.length} bytes from file`);
-
-        try {
-            const reportData = JSON.parse(fileContent);
-            res.json({
-                success: true,
-                reportStructure: Object.keys(reportData),
-                hasResults: !!reportData.results,
-                hasDetectors:
-                    reportData.results && !!reportData.results.detectors,
-                detectorCount:
-                    reportData.results && reportData.results.detectors
-                        ? reportData.results.detectors.length
-                        : 0,
-            });
-        } catch (parseError) {
-            res.status(500).json({
-                error: "Failed to parse report file",
-                filePreview: fileContent.substring(0, 500) + "...",
-            });
-        }
-    } catch (error) {
-        console.error("Error reading report file:", error);
-        res.status(500).json({ error: "Failed to read report file" });
-    }
-});
-
 // Add this function before the endpoints
 async function getEtherscanData(address, page = 1, offset = 10) {
     try {
@@ -1701,65 +949,706 @@ app.get("/api/wallet/:address", async (req, res) => {
     }
 });
 
+// Then modify the upload-contract endpoint to handle in-memory files
+app.post(
+    "/api/upload-contract",
+    upload.single("contract"),
+    async (req, res) => {
+        try {
+            if (!req.file) {
+                return res.status(400).json({ error: "No file uploaded" });
+            }
+
+            const { name, address } = req.body;
+
+            if (!name) {
+                return res
+                    .status(400)
+                    .json({ error: "Contract name is required" });
+            }
+
+            // Get the contract content from memory
+            const fileContent = req.file.buffer.toString('utf8');
+            
+            // Calculate SHA256 hash of the contract contents
+            const hash = crypto
+                .createHash("sha256")
+                .update(fileContent)
+                .digest("hex");
+
+            // Create a temporary file path for Slither analysis
+            const tempFilePath = path.join(os.tmpdir(), `${Date.now()}-${req.file.originalname}`);
+            
+            // Write the file content to the temporary file
+            fs.writeFileSync(tempFilePath, fileContent);
+
+            // Insert contract info into MySQL
+            const [result] = await mysqlPool.query(
+                `INSERT INTO contracts (name, address, filename, filepath, contract_hashcode, status) 
+                VALUES (?, ?, ?, ?, ?, 'pending')`,
+                [
+                    name,
+                    address || null,
+                    req.file.originalname,
+                    tempFilePath, // Use the temporary file path
+                    hash,
+                ]
+            );
+
+            const contractId = result.insertId;
+
+            // Start Slither analysis in the background using the temporary file
+            runSlitherAnalysis(contractId, tempFilePath, true); // Pass true to indicate it's a temp file
+
+            res.status(201).json({
+                message: "Contract uploaded successfully",
+                contractId: contractId,
+                status: "pending",
+                hash: hash,
+            });
+        } catch (error) {
+            console.error("Error uploading contract:", error);
+            res.status(500).json({ error: "Failed to upload contract" });
+        }
+    }
+);
+
+// Add this function to preprocess the contract
+async function preprocessContract(filePath) {
+    try {
+        let content = fs.readFileSync(filePath, 'utf8');
+        
+        // Replace pragma solidity with a compatible version
+        content = content.replace(
+            /pragma solidity [\^]?[0-9]+\.[0-9]+\.[0-9]+;/g, 
+            'pragma solidity 0.8.7;'
+        );
+        
+        // Write the modified content back to the file
+        fs.writeFileSync(filePath, content);
+        console.log(`Preprocessed contract to use compatible Solidity version`);
+    } catch (error) {
+        console.error(`Error preprocessing contract: ${error.message}`);
+    }
+}
+
+// Modify the runSlitherAnalysis function
+async function runSlitherAnalysis(contractId, filePath, isTemporary = false) {
+    // Set a timeout for the entire analysis process (2 minutes)
+    const analysisTimeout = setTimeout(async () => {
+        console.error(
+            `Analysis for contract ${contractId} timed out after 2 minutes`
+        );
+
+        try {
+            // Check current status
+            const [statusResult] = await mysqlPool.query(
+                `SELECT status FROM contracts WHERE id = ?`,
+                [contractId]
+            );
+
+            // Only update if still analyzing
+            if (
+                statusResult.length > 0 &&
+                statusResult[0].status === "analyzing"
+            ) {
+                // Update contract status to failed
+                await mysqlPool.query(
+                    `UPDATE contracts SET status = 'failed' WHERE id = ?`,
+                    [contractId]
+                );
+
+                // Store timeout error in the analysis_reports table
+                await mysqlPool.query(
+                    `INSERT INTO analysis_reports 
+                     (contract_id, report_json, vulnerability_count) 
+                     VALUES (?, ?, 0)`,
+                    [
+                        contractId,
+                        JSON.stringify({
+                            error: "Analysis timed out after 2 minutes",
+                        }),
+                    ]
+                );
+            }
+            
+            // Clean up temporary file if needed
+            if (isTemporary && fs.existsSync(filePath)) {
+                fs.unlinkSync(filePath);
+            }
+        } catch (error) {
+            console.error(
+                `Error handling timeout for contract ${contractId}:`,
+                error
+            );
+        }
+    }, 2 * 60 * 1000); // 2 minutes
+
+    try {
+        // Update status to analyzing
+        await mysqlPool.query(
+            `UPDATE contracts SET status = 'analyzing' WHERE id = ?`,
+            [contractId]
+        );
+
+        // Create output directory if it doesn't exist
+        const outputDir = path.join(__dirname, "reports");
+        if (!fs.existsSync(outputDir)) {
+            fs.mkdirSync(outputDir, { recursive: true });
+        }
+
+        const outputPath = path.join(outputDir, `report-${contractId}.json`);
+
+        console.log(`Running Slither analysis on contract ID ${contractId}...`);
+        console.log(`File path: ${filePath}`);
+        console.log(`Output path: ${outputPath}`);
+
+        // Preprocess the contract to use compatible Solidity version
+        await preprocessContract(filePath);
+        
+        // Run Slither with JSON output - use double quotes for Windows paths
+        const command = `python -m slither "${filePath}" --json "${outputPath}"`;
+        console.log(`Executing command: ${command}`);
+
+        try {
+            const { stdout, stderr } = await execPromise(command, {
+                timeout: 1.5 * 60 * 1000,
+            }); // 1.5 minute timeout for the command
+            console.log("Slither stdout:", stdout);
+            if (stderr) console.log("Slither stderr (warnings/info):", stderr);
+        } catch (execError) {
+            // Check if it's a timeout error
+            if (execError.killed && execError.signal === "SIGTERM") {
+                throw new Error("Slither analysis timed out");
+            }
+
+            // Slither returns non-zero exit code when it finds vulnerabilities
+            // This is actually a successful analysis, not an error
+            console.log("Slither found vulnerabilities (expected behavior)");
+            console.log("Slither stdout:", execError.stdout);
+            console.log("Slither stderr (findings):", execError.stderr);
+        }
+
+        // Read the JSON report with better error handling
+        let reportData;
+        try {
+            const reportContent = fs.readFileSync(outputPath, "utf8");
+            console.log(`Read ${reportContent.length} bytes from report file`);
+            console.log(
+                `Report preview: ${reportContent.substring(0, 200)}...`
+            );
+
+            reportData = JSON.parse(reportContent);
+        } catch (readError) {
+            console.error(
+                `Error reading or parsing report file: ${readError.message}`
+            );
+            throw new Error(
+                `Failed to read or parse Slither report: ${readError.message}`
+            );
+        }
+
+        // Count vulnerabilities by severity
+        const vulnerabilityCounts = countVulnerabilities(reportData);
+
+        // Store results in MySQL with better error handling
+        try {
+            const reportJson = JSON.stringify(reportData);
+            console.log(`Serialized report is ${reportJson.length} bytes`);
+
+            await mysqlPool.query(
+                `INSERT INTO analysis_reports 
+                 (contract_id, report_json, vulnerability_count, high_severity_count, medium_severity_count, low_severity_count) 
+                 VALUES (?, ?, ?, ?, ?, ?)`,
+                [
+                    contractId,
+                    reportJson,
+                    vulnerabilityCounts.total,
+                    vulnerabilityCounts.high,
+                    vulnerabilityCounts.medium,
+                    vulnerabilityCounts.low,
+                ]
+            );
+        } catch (dbError) {
+            console.error(
+                `Error storing report in database: ${dbError.message}`
+            );
+            throw new Error(
+                `Failed to store report in database: ${dbError.message}`
+            );
+        }
+
+        // Update contract status to completed
+        await mysqlPool.query(
+            `UPDATE contracts SET status = 'completed' WHERE id = ?`,
+            [contractId]
+        );
+
+        console.log(`Analysis completed for contract ID ${contractId}`);
+
+        // Clean up the temporary file if needed
+        if (isTemporary && fs.existsSync(filePath)) {
+            fs.unlinkSync(filePath);
+            console.log(`Temporary file ${filePath} deleted`);
+        }
+
+        // Clear the timeout since we completed successfully
+        clearTimeout(analysisTimeout);
+    } catch (error) {
+        console.error(`Error analyzing contract ${contractId}:`, error);
+        console.error(`Error stack: ${error.stack}`);
+
+        // If there was stderr output from the command, log it
+        if (error.stderr) {
+            console.error(`Command stderr: ${error.stderr}`);
+        }
+
+        // Update contract status to failed
+        await mysqlPool.query(
+            `UPDATE contracts SET status = 'failed' WHERE id = ?`,
+            [contractId]
+        );
+
+        // Store error information in the analysis_reports table
+        try {
+            await mysqlPool.query(
+                `INSERT INTO analysis_reports 
+                 (contract_id, report_json, vulnerability_count) 
+                 VALUES (?, ?, 0)`,
+                [
+                    contractId,
+                    JSON.stringify({
+                        error: error.message || "Unknown error during analysis",
+                    }),
+                ]
+            );
+        } catch (dbError) {
+            console.error("Failed to store analysis error:", dbError);
+        }
+
+        // Clean up the temporary file if needed
+        if (isTemporary && fs.existsSync(filePath)) {
+            fs.unlinkSync(filePath);
+            console.log(`Temporary file ${filePath} deleted after error`);
+        }
+
+        // Clear the timeout since we've handled the error
+        clearTimeout(analysisTimeout);
+    }
+}
+
+// Helper function to count vulnerabilities by severity
+function countVulnerabilities(reportData) {
+    const counts = {
+        high: 0,
+        medium: 0,
+        low: 0,
+        total: 0,
+    };
+
+    if (reportData && reportData.results && reportData.results.detectors) {
+        reportData.results.detectors.forEach((finding) => {
+            counts.total++;
+
+            if (finding.impact && finding.impact.toLowerCase() === "high") {
+                counts.high++;
+            } else if (
+                finding.impact &&
+                finding.impact.toLowerCase() === "medium"
+            ) {
+                counts.medium++;
+            } else {
+                counts.low++;
+            }
+        });
+    }
+
+    return counts;
+}
+
+// get contract report
+app.get("/api/report/:reportId", async (req, res) => {
+    try {
+        const { reportId } = req.params;
+
+        // Get the report from MySQL
+        const [reports] = await mysqlPool.query(
+            `SELECT ar.*, c.name as contract_name, c.address as contract_address, c.filename
+             FROM analysis_reports ar
+             JOIN contracts c ON ar.contract_id = c.id
+             WHERE ar.id = ?`,
+            [reportId]
+        );
+
+        if (reports.length === 0) {
+            return res.status(404).json({ error: "Report not found" });
+        }
+
+        const report = reports[0];
+
+        // Parse the JSON report
+        const reportJson = JSON.parse(report.report_json);
+
+        // Format the response
+        const response = {
+            id: report.id,
+            contractId: report.contract_id,
+            contractName: report.contract_name,
+            contractAddress: report.contract_address,
+            filename: report.filename,
+            completionDate: report.completion_date,
+            vulnerabilitySummary: {
+                total: report.vulnerability_count,
+                highSeverity: report.high_severity_count,
+                mediumSeverity: report.medium_severity_count,
+                lowSeverity: report.low_severity_count,
+            },
+            findings: reportJson.results.detectors.map((finding) => ({
+                name: finding.check,
+                description: finding.description,
+                impact: finding.impact,
+                confidence: finding.confidence,
+                elements: finding.elements,
+            })),
+        };
+
+        res.json(response);
+    } catch (error) {
+        console.error("Error retrieving report:", error);
+        res.status(500).json({ error: "Failed to retrieve report" });
+    }
+});
+
 // Get all contracts
 app.get("/api/contracts", async (req, res) => {
     try {
         const [contracts] = await mysqlPool.query(
             `SELECT c.*, 
-                    ar.vulnerability_count,
-                    ar.high_severity_count,
-                    ar.medium_severity_count,
-                    ar.low_severity_count,
-                    ar.report_json
+                    IFNULL(ar.vulnerability_count, 0) as vulnerability_count,
+                    IFNULL(ar.high_severity_count, 0) as high_severity_count
              FROM contracts c
              LEFT JOIN analysis_reports ar ON c.id = ar.contract_id
              ORDER BY c.upload_date DESC`
         );
 
-        // Process contracts to include vulnerability information
-        const processedContracts = contracts.map(contract => {
-            let description = '';
-            let affectedLines = '';
-            
-            // Parse report JSON if available
-            if (contract.report_json) {
-                try {
-                    const report = JSON.parse(contract.report_json);
-                    if (report.results && report.results.detectors && report.results.detectors.length > 0) {
-                        const firstIssue = report.results.detectors[0];
-                        description = firstIssue.description || '';
-                        affectedLines = firstIssue.lines ? firstIssue.lines.join(', ') : '';
-                    }
-                } catch (e) {
-                    console.error('Error parsing report JSON:', e);
-                }
-            }
-
-            return {
-                id: contract.id,
-                name: contract.name,
-                address: contract.address,
-                filename: contract.filename,
-                status: contract.status,
-                upload_date: contract.upload_date,
-                description: description,
-                affectedLines: affectedLines,
-                vulnerabilities: {
-                    total: contract.vulnerability_count || 0,
-                    high: contract.high_severity_count || 0,
-                    medium: contract.medium_severity_count || 0,
-                    low: contract.low_severity_count || 0
-                }
-            };
-        });
-
-        res.json(processedContracts);
+        res.json(contracts);
     } catch (error) {
-        console.error("Error fetching contracts:", error);
-        res.status(500).json({ error: "Failed to fetch contracts" });
+        console.error("Error retrieving contracts:", error);
+        res.status(500).json({ error: "Failed to retrieve contracts" });
     }
 });
 
+// Get contract status
+app.get("/api/contract/:contractId/status", async (req, res) => {
+    try {
+        const { contractId } = req.params;
+
+        const [contracts] = await mysqlPool.query(
+            `SELECT id, name, status, upload_date FROM contracts WHERE id = ?`,
+            [contractId]
+        );
+
+        if (contracts.length === 0) {
+            return res.status(404).json({ error: "Contract not found" });
+        }
+
+        res.json(contracts[0]);
+    } catch (error) {
+        console.error("Error retrieving contract status:", error);
+        res.status(500).json({ error: "Failed to retrieve contract status" });
+    }
+});
+
+// Get report by contract ID with improved error handling
+app.get("/api/contract/:contractId/report", async (req, res) => {
+    try {
+        const { contractId } = req.params;
+        console.log(`Retrieving report for contract ID: ${contractId}`);
+
+        // Get the report from MySQL
+        const [reports] = await mysqlPool.query(
+            `SELECT ar.*, c.name as contract_name, c.address as contract_address, c.filename, c.status
+             FROM contracts c
+             LEFT JOIN analysis_reports ar ON c.id = ar.contract_id
+             WHERE c.id = ?
+             ORDER BY ar.completion_date DESC
+             LIMIT 1`,
+            [contractId]
+        );
+
+        console.log(
+            `Found ${reports.length} reports for contract ID ${contractId}`
+        );
+
+        if (reports.length === 0) {
+            return res.status(404).json({ error: "Contract not found" });
+        }
+
+        const report = reports[0];
+        console.log(
+            `Contract status: ${report.status}, Report ID: ${
+                report.id || "none"
+            }`
+        );
+
+        // If no report exists yet or contract is still being analyzed
+        if (!report.id || report.status === "analyzing") {
+            return res.json({
+                contractId: contractId,
+                contractName: report.contract_name,
+                contractAddress: report.contract_address,
+                filename: report.filename,
+                status: report.status,
+                message:
+                    report.status === "analyzing"
+                        ? "Analysis in progress"
+                        : report.status === "failed"
+                        ? "Analysis failed"
+                        : "Analysis pending",
+            });
+        }
+
+        // Parse the JSON report with better error handling
+        let reportJson;
+        try {
+            if (!report.report_json) {
+                console.error("Report JSON is empty for report ID:", report.id);
+                throw new Error("Report JSON is empty");
+            }
+
+            // Check if report_json is already an object (MySQL JSON type behavior)
+            if (typeof report.report_json === "object") {
+                console.log(
+                    "Report JSON is already an object, no parsing needed"
+                );
+                reportJson = report.report_json;
+            } else {
+                // Log the raw report for debugging
+                console.log(`Report JSON length: ${report.report_json.length}`);
+                console.log(
+                    "Raw report JSON preview:",
+                    report.report_json.substring(0, 200) + "..."
+                );
+                reportJson = JSON.parse(report.report_json);
+            }
+
+            console.log("Successfully processed report JSON");
+        } catch (error) {
+            console.error("Error processing report JSON:", error);
+
+            // Handle the case where report_json might be an object but not in the expected format
+            if (typeof report.report_json === "object") {
+                console.log(
+                    "Report JSON structure:",
+                    Object.keys(report.report_json)
+                );
+                return res.json({
+                    id: report.id,
+                    contractId: report.contract_id,
+                    contractName: report.contract_name,
+                    status: "completed",
+                    error: "Report has unexpected structure",
+                    reportStructure: Object.keys(report.report_json),
+                });
+            }
+
+            return res.json({
+                id: report.id,
+                contractId: report.contract_id,
+                contractName: report.contract_name,
+                status: "failed",
+                error: "Invalid report format: " + error.message,
+            });
+        }
+
+        // Check if the report contains an error
+        if (reportJson.error) {
+            console.log("Report contains error:", reportJson.error);
+            return res.json({
+                id: report.id,
+                contractId: report.contract_id,
+                contractName: report.contract_name,
+                status: "failed",
+                error: reportJson.error,
+            });
+        }
+
+        console.log("Report structure keys:", Object.keys(reportJson));
+
+        // Format the response for a successful report
+        try {
+            const response = {
+                id: report.id,
+                contractId: report.contract_id,
+                contractName: report.contract_name,
+                contractAddress: report.contract_address,
+                filename: report.filename,
+                status: report.status,
+                completionDate: report.completion_date,
+                vulnerabilitySummary: {
+                    total: report.vulnerability_count || 0,
+                    highSeverity: report.high_severity_count || 0,
+                    mediumSeverity: report.medium_severity_count || 0,
+                    lowSeverity: report.low_severity_count || 0,
+                },
+                findings:
+                    reportJson.results && reportJson.results.detectors
+                        ? reportJson.results.detectors.map((finding) => ({
+                              name: finding.check,
+                              description: finding.description,
+                              impact: finding.impact,
+                              confidence: finding.confidence,
+                              elements: finding.elements,
+                          }))
+                        : [],
+            };
+
+            console.log("Successfully created response object");
+            res.json(response);
+        } catch (formatError) {
+            console.error("Error formatting response:", formatError);
+            console.error("Error stack:", formatError.stack);
+            throw formatError; // Re-throw to be caught by the outer catch
+        }
+    } catch (error) {
+        console.error("Error retrieving report:", error);
+        console.error("Error stack:", error.stack);
+        res.status(500).json({ error: "Failed to retrieve report" });
+    }
+});
+
+// Improved debug endpoint
+app.get("/api/report/:reportId/debug", async (req, res) => {
+    try {
+        const { reportId } = req.params;
+
+        console.log(`Fetching report with ID: ${reportId}`);
+
+        // Get the report from MySQL
+        const [reports] = await mysqlPool.query(
+            `SELECT ar.*, c.name as contract_name, c.address as contract_address, c.filename
+             FROM analysis_reports ar
+             JOIN contracts c ON ar.contract_id = c.id
+             WHERE ar.id = ?`,
+            [reportId]
+        );
+
+        console.log(`Found ${reports.length} reports`);
+
+        if (reports.length === 0) {
+            return res.status(404).json({ error: "Report not found" });
+        }
+
+        const report = reports[0];
+        console.log(
+            `Report for contract: ${report.contract_name}, ID: ${report.contract_id}`
+        );
+
+        // Return the raw report for debugging
+        res.json({
+            reportId: report.id,
+            contractId: report.contract_id,
+            contractName: report.contract_name,
+            rawReportString: report.report_json, // Return as string without parsing
+            reportLength: report.report_json ? report.report_json.length : 0,
+            vulnerabilityCounts: {
+                total: report.vulnerability_count,
+                high: report.high_severity_count,
+                medium: report.medium_severity_count,
+                low: report.low_severity_count,
+            },
+        });
+    } catch (error) {
+        console.error("Error retrieving report:", error);
+        res.status(500).json({
+            error: "Failed to retrieve report",
+            details: error.message,
+        });
+    }
+});
+
+// Endpoint to reset a stuck analysis
+app.post("/api/contract/:contractId/reset", async (req, res) => {
+    try {
+        const { contractId } = req.params;
+
+        // Check if contract exists and is in analyzing state
+        const [contracts] = await mysqlPool.query(
+            `SELECT id, filepath, status FROM contracts WHERE id = ? AND status = 'analyzing'`,
+            [contractId]
+        );
+
+        if (contracts.length === 0) {
+            return res.status(404).json({
+                error: "Contract not found or not in 'analyzing' state",
+            });
+        }
+
+        const contract = contracts[0];
+
+        // Update status to pending
+        await mysqlPool.query(
+            `UPDATE contracts SET status = 'pending' WHERE id = ?`,
+            [contractId]
+        );
+
+        // Start analysis again
+        runSlitherAnalysis(contractId, contract.filepath);
+
+        res.json({
+            message: "Analysis reset and restarted",
+            contractId: contractId,
+            status: "pending",
+        });
+    } catch (error) {
+        console.error("Error resetting analysis:", error);
+        res.status(500).json({ error: "Failed to reset analysis" });
+    }
+});
+
+// Add this endpoint for direct file reading
+app.get("/api/report-file/:contractId", async (req, res) => {
+    try {
+        const { contractId } = req.params;
+        const reportPath = path.join(
+            __dirname,
+            "reports",
+            `report-${contractId}.json`
+        );
+
+        console.log(`Attempting to read report file: ${reportPath}`);
+
+        if (!fs.existsSync(reportPath)) {
+            return res.status(404).json({ error: "Report file not found" });
+        }
+
+        const fileContent = fs.readFileSync(reportPath, "utf8");
+        console.log(`Read ${fileContent.length} bytes from file`);
+
+        try {
+            const reportData = JSON.parse(fileContent);
+            res.json({
+                success: true,
+                reportStructure: Object.keys(reportData),
+                hasResults: !!reportData.results,
+                hasDetectors:
+                    reportData.results && !!reportData.results.detectors,
+                detectorCount:
+                    reportData.results && reportData.results.detectors
+                        ? reportData.results.detectors.length
+                        : 0,
+            });
+        } catch (parseError) {
+            res.status(500).json({
+                error: "Failed to parse report file",
+                filePreview: fileContent.substring(0, 500) + "...",
+            });
+        }
+    } catch (error) {
+        console.error("Error reading report file:", error);
+        res.status(500).json({ error: "Failed to read report file" });
+    }
+});
 // Error handling middleware
 app.use((err, req, res, next) => {
     console.error(err.stack);

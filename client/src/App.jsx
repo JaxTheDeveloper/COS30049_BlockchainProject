@@ -142,6 +142,7 @@ function AppContent() {
     try {
       setContractLoading(true);
       setContractData(null);
+      setError(null);
       
       // Fetch contract data using the report endpoint
       const response = await fetch(`http://localhost:5000/api/contract/${contractId}/report`);
@@ -152,6 +153,16 @@ function AppContent() {
       }
       
       console.log('[DEBUG] Contract analysis data:', data);
+      
+      // Ensure findings object exists
+      if (!data.findings) {
+        data.findings = {
+          vulnerabilities: [],
+          informational: [],
+          optimization: []
+        };
+      }
+      
       setContractData(data);
       
       // Reset wallet data when viewing contract analysis
@@ -159,6 +170,16 @@ function AppContent() {
     } catch (err) {
       console.error('[DEBUG] Contract analysis error:', err);
       setError(err.message || 'Error analyzing contract');
+      
+      // Set a minimal contract data structure to prevent undefined errors
+      setContractData({
+        status: 'error',
+        findings: {
+          vulnerabilities: [],
+          informational: [],
+          optimization: []
+        }
+      });
     } finally {
       setContractLoading(false);
     }
