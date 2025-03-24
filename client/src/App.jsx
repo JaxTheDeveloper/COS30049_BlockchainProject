@@ -91,15 +91,25 @@ function AppContent() {
     const fetchMarketData = async () => {
       try {
         const response = await fetch('http://localhost:5000/api/market-data');
-        const data = await response.json();
         
         if (!response.ok) {
-          throw new Error(data.error || 'Failed to fetch market data');
+          throw new Error('Failed to fetch market data');
         }
 
+        const data = await response.json();
         setMarketData(data);
       } catch (err) {
         console.error('Error fetching market data:', err);
+        // Provide default market data when fetch fails
+        setMarketData({
+          price: '0.00',
+          marketCap: '0.0',
+          priceChange24h: '0.00',
+          volume24h: '0',
+          gasPrice: '0',
+          priceHistory: [],
+          transactionHistory: []
+        });
       }
     };
 

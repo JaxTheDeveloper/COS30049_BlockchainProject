@@ -4,6 +4,7 @@ const cors = require("cors");
 const app = express();
 const dotenv = require("dotenv");
 const neo4j = require("neo4j-driver");
+const { toInteger } = neo4j.int; // Import toInteger function from neo4j.int
 const axios = require("axios");
 const mysql = require("mysql2/promise");
 const { exec } = require("child_process");
@@ -570,6 +571,23 @@ app.get("/api/graph/wallet-graph/:address", async (req, res) => {
             }
 
             const graphData = result.records[0].get("graph");
+
+            // Process the graph data to ensure proper values
+            graphData.edges = graphData.edges.map(edge => {
+                try {
+                    // Ensure value is processed correctly
+                    if (edge.value && typeof edge.value === 'string') {
+                        // The value is stored as a string in Neo4j - no need to convert
+                        // Just ensure it's a valid number string
+                        const numValue = edge.value.replace(/[^0-9.]/g, '');
+                        edge.value = numValue;
+                    }
+                } catch (error) {
+                    console.log("Error processing edge value:", error);
+                    edge.value = "0";
+                }
+                return edge;
+            });
 
             // Sort edges by timestamp
             graphData.edges.sort((a, b) => b.timeStamp - a.timeStamp);
@@ -1230,23 +1248,16 @@ app.get("/api/contract/:contractId/report", async (req, res) => {
                     contract.report_json,
                     typeof contract.report_json
                 );
-                // Handle both string and object cases
-                reportData =
-                    typeof contract.report_json === "string"
-                        ? JSON.parse(contract.report_json)
-                        : contract.report_json;
-
-                console.log(`[DEBUG] Report data structure:`, {
-                    hasResults: !!reportData.results,
-                    hasDetectors: !!reportData.results?.detectors,
-                    detectorsCount: reportData.results?.detectors?.length || 0,
-                });
-
-                if (reportData.results && reportData.results.detectors) {
+                // Check if report_json is already an object (not a string)
+                const report = typeof contract.report_json === 'string' 
+                    ? JSON.parse(contract.report_json)
+                    : contract.report_json;
+                    
+                if (report.results && report.results.detectors && report.results.detectors.length > 0) {
                     console.log(
-                        `[DEBUG] Processing ${reportData.results.detectors.length} detectors`
+                        `[DEBUG] Processing ${report.results.detectors.length} detectors`
                     );
-                    vulnerabilities = reportData.results.detectors.map(
+                    vulnerabilities = report.results.detectors.map(
                         (finding) => {
                             console.log(`[DEBUG] Processing finding:`, {
                                 check: finding.check,
@@ -1524,6 +1535,29 @@ async function getEtherscanData(address, page = 1, offset = 10) {
             }
         }
 
+        // Get transaction count with retry mechanism
+        let txCountResponse;
+        retries = 3;
+        while (retries > 0) {
+            try {
+                txCountResponse = await axios.get(ETHERSCAN_API_URL, {
+                    params: {
+                        module: "proxy",
+                        action: "eth_getTransactionCount",
+                        address: address,
+                        tag: "latest",
+                        apikey: ETHERSCAN_API_KEY,
+                    },
+                    timeout: 5000,
+                });
+                break;
+            } catch (error) {
+                retries--;
+                if (retries === 0) throw error;
+                await new Promise((resolve) => setTimeout(resolve, 1000));
+            }
+        }
+
         // Get transactions with retry mechanism
         let txListResponse;
         retries = 3;
@@ -1554,7 +1588,8 @@ async function getEtherscanData(address, page = 1, offset = 10) {
         // Handle API errors
         if (
             balanceResponse.data.message === "NOTOK" ||
-            txListResponse.data.message === "NOTOK"
+            txListResponse.data.message === "NOTOK" ||
+            txCountResponse.data.message === "NOTOK"
         ) {
             throw new Error(
                 "Etherscan API rate limit exceeded. Please try again later."
@@ -1565,6 +1600,11 @@ async function getEtherscanData(address, page = 1, offset = 10) {
         const balance = balanceResponse.data.result
             ? (parseFloat(balanceResponse.data.result) / 1e18).toFixed(6)
             : "0.000000";
+
+        // Process transaction count - convert hex to decimal
+        const txCount = txCountResponse.data.result
+            ? parseInt(txCountResponse.data.result, 16)
+            : 0;
 
         // Process transactions
         const transactions =
@@ -1579,14 +1619,18 @@ async function getEtherscanData(address, page = 1, offset = 10) {
                       gasPrice: tx.gasPrice,
                       gasUsed: tx.gasUsed,
                       isError: tx.isError === "1",
+                      blockNumber: tx.blockNumber
                   }))
                 : [];
 
         return {
             address,
             balance,
-            transactionCount: transactions.length,
+            transactionCount: txCount,
+            totalFetchedTransactions: transactions.length,
+            currentPage: page,
             recentTransactions: transactions,
+            hasMoreTransactions: transactions.length === offset,
         };
     } catch (error) {
         console.error(`[MAIN] Etherscan API Error: ${error.message}`);
@@ -1609,25 +1653,283 @@ app.get("/api/wallet/:address", async (req, res) => {
             throw new Error("Database connection not available");
         }
 
-        // Get wallet data from Etherscan (first 10 transactions)
-        const walletData = await getEtherscanData(address);
-
+        // Check if we already have data for this address in Neo4j
         const session = neo4jDriver.session();
         try {
-            // Store/update main wallet data
+            const existingWalletResult = await session.run(
+                `MATCH (w:Address {address: $address})
+                 OPTIONAL MATCH (w)-[r:HAS_TRANSACTION]-(other:Address)
+                 RETURN w, count(r) as txCount`,
+                { address }
+            );
+            
+            const existingWallet = existingWalletResult.records[0]?.get("w");
+            const storedTxCount = existingWalletResult.records[0]?.get("txCount").toNumber() || 0;
+            
+            // If we have recent data and some transactions, use that
+            if (existingWallet && existingWallet.properties.lastUpdated && storedTxCount > 0) {
+                const lastUpdated = new Date(existingWallet.properties.lastUpdated.toString());
+                const now = new Date();
+                const hoursSinceUpdate = (now - lastUpdated) / (1000 * 60 * 60);
+                
+                // Only use cached data if it's less than 1 hour old
+                if (hoursSinceUpdate < 1) {
+                    console.log(`Using cached wallet data for ${address}`);
+                    
+                    // Get the transactions from Neo4j (first page only)
+                    const txResult = await session.run(
+                        `MATCH (w:Address {address: $address})-[r:HAS_TRANSACTION]-(other:Address)
+                         RETURN r, other.address as connectedAddress
+                         ORDER BY r.timeStamp DESC
+                         LIMIT 10`,
+                        { address }
+                    );
+                    
+                    const transactions = txResult.records.map(record => {
+                        const tx = record.get("r").properties;
+                        const connectedAddress = record.get("connectedAddress");
+                        
+                        // Determine the from/to based on transaction type
+                        const isOutgoing = tx.type === "out";
+                        
+                        return {
+                            hash: tx.hash,
+                            from: isOutgoing ? address : connectedAddress,
+                            to: isOutgoing ? connectedAddress : address,
+                            value: tx.value,
+                            timeStamp: tx.timeStamp,
+                            gasPrice: tx.gasPrice,
+                            gasUsed: tx.gasUsed,
+                            blockNumber: tx.blockNumber
+                        };
+                    });
+                    
+                    // Return the cached data
+                    return res.json({
+                        address,
+                        balance: existingWallet.properties.balance,
+                        transactionCount: existingWallet.properties.transactionCount 
+                            ? parseInt(existingWallet.properties.transactionCount) 
+                            : storedTxCount,
+                        totalFetchedTransactions: transactions.length,
+                        currentPage: 1,
+                        recentTransactions: transactions,
+                        hasMoreTransactions: transactions.length === 10,
+                        fromCache: true,
+                        fetchedPages: existingWallet.properties.fetchedPages || [1]
+                    });
+                }
+            }
+            
+            // Get wallet data from Etherscan (first 10 transactions)
+            const walletData = await getEtherscanData(address);
+
+            // Store/update main wallet data with fetchedPages tracking
             await session.run(
                 `MERGE (w:Address {address: $address})
                  SET w.balance = $balance,
-                     w.transactionCount = $transactionCount,
-                     w.lastUpdated = datetime()`,
+                     w.transactionCount = toInteger($txCount),
+                     w.lastUpdated = datetime(),
+                     w.fetchedPages = CASE
+                        WHEN w.fetchedPages IS NULL THEN [toInteger(1)]
+                        WHEN NOT toInteger(1) IN w.fetchedPages THEN w.fetchedPages + toInteger(1)
+                        ELSE w.fetchedPages
+                     END`,
                 {
                     address: walletData.address,
                     balance: walletData.balance,
-                    transactionCount: walletData.transactionCount,
+                    txCount: parseInt(walletData.transactionCount)
                 }
             );
 
-            // Process each transaction
+            // Process and store transactions for each page in Neo4j
+            for (let pageNum = 1; pageNum <= walletData.prefetchedPages.length; pageNum++) {
+                const pageTransactions = walletData.allTransactions.filter(tx => {
+                    const txIndex = walletData.allTransactions.indexOf(tx);
+                    return Math.floor(txIndex / 10) + 1 === pageNum;
+                });
+
+                for (const tx of pageTransactions) {
+                    // Ensure both addresses exist
+                    await session.run(
+                        `MERGE (from:Address {address: $fromAddress})
+                         MERGE (to:Address {address: $toAddress})`,
+                        {
+                            fromAddress: tx.from,
+                            toAddress: tx.to,
+                        }
+                    );
+
+                    // Create the transaction relationship based on direction
+                    if (tx.from.toLowerCase() === address.toLowerCase()) {
+                        // Outgoing transaction
+                        await session.run(
+                            `MATCH (from:Address {address: $fromAddress})
+                             MATCH (to:Address {address: $toAddress})
+                             MERGE (from)-[r:HAS_TRANSACTION]->(to)
+                             SET r = $txData`,
+                            {
+                                fromAddress: tx.from,
+                                toAddress: tx.to,
+                                txData: {
+                                    hash: tx.hash,
+                                    value: String(tx.value),
+                                    timeStamp: String(tx.timeStamp),
+                                    gasPrice: String(tx.gasPrice),
+                                    gasUsed: String(tx.gasUsed),
+                                    type: "out",
+                                    blockNumber: String(tx.blockNumber),
+                                    page: parseInt(pageNum)
+                                },
+                            }
+                        );
+                    } else if (tx.to.toLowerCase() === address.toLowerCase()) {
+                        // Incoming transaction
+                        await session.run(
+                            `MATCH (from:Address {address: $fromAddress})
+                             MATCH (to:Address {address: $toAddress})
+                             MERGE (from)-[r:HAS_TRANSACTION]->(to)
+                             SET r = $txData`,
+                            {
+                                fromAddress: tx.from,
+                                toAddress: tx.to,
+                                txData: {
+                                    hash: tx.hash,
+                                    value: String(tx.value),
+                                    timeStamp: String(tx.timeStamp),
+                                    gasPrice: String(tx.gasPrice),
+                                    gasUsed: String(tx.gasUsed),
+                                    type: "in",
+                                    blockNumber: String(tx.blockNumber),
+                                    page: parseInt(pageNum)
+                                },
+                            }
+                        );
+                    }
+                }
+            }
+
+            // Get the updated fetchedPages after storing
+            const updatedWalletResult = await session.run(
+                `MATCH (w:Address {address: $address})
+                 RETURN w.fetchedPages as fetchedPages`,
+                { address }
+            );
+            
+            const fetchedPages = updatedWalletResult.records[0]?.get("fetchedPages") || [1];
+
+            return res.json({
+                ...walletData,
+                fromCache: false,
+                fetchedPages
+            });
+        } finally {
+            await session.close();
+        }
+    } catch (error) {
+        console.error("Error details:", error);
+        res.status(500).json({
+            error: "Error fetching wallet data",
+            details: error.message,
+        });
+    }
+});
+
+// Add endpoint to fetch transactions by page
+app.get("/api/wallet/:address/transactions", async (req, res) => {
+    const { address } = req.params;
+    const page = parseInt(req.query.page) || 1;
+    const offset = parseInt(req.query.offset) || 10;
+
+    if (!/^0x[a-fA-F0-9]{40}$/.test(address)) {
+        return res.status(400).json({
+            error: "Invalid Ethereum address format",
+        });
+    }
+
+    try {
+        if (!neo4jDriver) {
+            throw new Error("Database connection not available");
+        }
+
+        const session = neo4jDriver.session();
+        
+        try {
+            // First check if we have this page cached in Neo4j
+            const cachedResult = await session.run(
+                `MATCH (w:Address {address: $address})
+                 OPTIONAL MATCH (w)-[r:HAS_TRANSACTION]-(other:Address)
+                 WITH w, r, other
+                 ORDER BY r.timeStamp DESC
+                 SKIP toInteger($skip)
+                 LIMIT toInteger($limit)
+                 RETURN r, other.address as connectedAddress, 
+                        count(r) as fetchedCount,
+                        w.fetchedPages as fetchedPages`,
+                { 
+                    address, 
+                    skip: parseInt((page - 1) * offset), 
+                    limit: parseInt(offset)
+                }
+            );
+            
+            const fetchedPages = cachedResult.records[0]?.get("fetchedPages") || [];
+            const fetchedCount = cachedResult.records.length;
+            
+            // If we have enough transactions for this page and we've already fetched this page before
+            const parsedPage = parseInt(page);
+            const pageIsCached = fetchedPages && Array.isArray(fetchedPages) && 
+                                fetchedPages.some(p => parseInt(p) === parsedPage);
+            
+            if (fetchedCount > 0 && pageIsCached) {
+                console.log(`Using cached transactions for ${address}, page ${parsedPage}`);
+                
+                const transactions = cachedResult.records.map(record => {
+                    const tx = record.get("r").properties;
+                    const connectedAddress = record.get("connectedAddress");
+                    
+                    // Determine the from/to based on transaction type
+                    const isOutgoing = tx.type === "out";
+                    
+                    return {
+                        hash: tx.hash,
+                        from: isOutgoing ? address : connectedAddress,
+                        to: isOutgoing ? connectedAddress : address,
+                        value: tx.value,
+                        timeStamp: tx.timeStamp,
+                        gasPrice: tx.gasPrice,
+                        gasUsed: tx.gasUsed,
+                        blockNumber: tx.blockNumber
+                    };
+                });
+                
+                // Get total transaction count from the wallet node
+                const walletInfoResult = await session.run(
+                    `MATCH (w:Address {address: $address})
+                     RETURN w.transactionCount as txCount`,
+                    { address }
+                );
+                
+                const txCount = walletInfoResult.records[0]?.get("txCount") 
+                    ? parseInt(walletInfoResult.records[0].get("txCount"))
+                    : fetchedCount;
+
+                return res.json({
+                    address,
+                    transactionCount: txCount,
+                    totalFetchedTransactions: fetchedCount,
+                    currentPage: page,
+                    recentTransactions: transactions,
+                    hasMoreTransactions: fetchedCount === offset,
+                    fromCache: true
+                });
+            }
+            
+            // If not in cache, fetch from Etherscan
+            console.log(`Fetching transactions from Etherscan for ${address}, page ${page}`);
+            const walletData = await getEtherscanData(address, page, offset);
+            
+            // Save the transactions to Neo4j
             for (const tx of walletData.recentTransactions) {
                 // Ensure both addresses exist
                 await session.run(
@@ -1652,11 +1954,13 @@ app.get("/api/wallet/:address", async (req, res) => {
                             toAddress: tx.to,
                             txData: {
                                 hash: tx.hash,
-                                value: tx.value,
-                                timeStamp: tx.timeStamp,
-                                gasPrice: tx.gasPrice,
-                                gasUsed: tx.gasUsed,
+                                value: String(tx.value),
+                                timeStamp: String(tx.timeStamp),
+                                gasPrice: String(tx.gasPrice),
+                                gasUsed: String(tx.gasUsed),
                                 type: "out",
+                                blockNumber: String(tx.blockNumber),
+                                page: parseInt(page)
                             },
                         }
                     );
@@ -1672,22 +1976,39 @@ app.get("/api/wallet/:address", async (req, res) => {
                             toAddress: tx.to,
                             txData: {
                                 hash: tx.hash,
-                                value: tx.value,
-                                timeStamp: tx.timeStamp,
-                                gasPrice: tx.gasPrice,
-                                gasUsed: tx.gasUsed,
+                                value: String(tx.value),
+                                timeStamp: String(tx.timeStamp),
+                                gasPrice: String(tx.gasPrice),
+                                gasUsed: String(tx.gasUsed),
                                 type: "in",
+                                blockNumber: String(tx.blockNumber),
+                                page: parseInt(page)
                             },
                         }
                     );
                 }
             }
+            
+            // Update the wallet node with transaction count and mark this page as fetched
+            await session.run(
+                `MATCH (w:Address {address: $address})
+                 SET w.transactionCount = toInteger($txCount),
+                     w.lastUpdated = datetime(),
+                     w.fetchedPages = CASE
+                        WHEN w.fetchedPages IS NULL THEN [toInteger($page)]
+                        WHEN NOT toInteger($page) IN w.fetchedPages THEN w.fetchedPages + toInteger($page)
+                        ELSE w.fetchedPages
+                     END`,
+                {
+                    address,
+                    txCount: parseInt(walletData.transactionCount),
+                    page: parseInt(page)
+                }
+            );
 
             return res.json({
-                address: walletData.address,
-                balance: walletData.balance,
-                transactionCount: walletData.transactionCount,
-                recentTransactions: walletData.recentTransactions,
+                ...walletData,
+                fromCache: false
             });
         } finally {
             await session.close();
@@ -1695,7 +2016,7 @@ app.get("/api/wallet/:address", async (req, res) => {
     } catch (error) {
         console.error("Error details:", error);
         res.status(500).json({
-            error: "Error fetching wallet data",
+            error: "Error fetching wallet transactions",
             details: error.message,
         });
     }
@@ -1724,7 +2045,11 @@ app.get("/api/contracts", async (req, res) => {
             // Parse report JSON if available
             if (contract.report_json) {
                 try {
-                    const report = JSON.parse(contract.report_json);
+                    // Check if report_json is already an object (not a string)
+                    const report = typeof contract.report_json === 'string' 
+                        ? JSON.parse(contract.report_json)
+                        : contract.report_json;
+                        
                     if (report.results && report.results.detectors && report.results.detectors.length > 0) {
                         const firstIssue = report.results.detectors[0];
                         description = firstIssue.description || '';
@@ -1757,6 +2082,281 @@ app.get("/api/contracts", async (req, res) => {
     } catch (error) {
         console.error("Error fetching contracts:", error);
         res.status(500).json({ error: "Failed to fetch contracts" });
+    }
+});
+
+// Add node-specific transactions endpoint for the graph
+app.get("/api/graph/node-transactions/:address", async (req, res) => {
+    const { address } = req.params;
+    const limit = parseInt(req.query.limit) || 10;
+    
+    console.log(`\n=== Fetching Next ${limit} Transactions for Node ===`);
+    console.log("Address:", address);
+    
+    if (!/^0x[a-fA-F0-9]{40}$/.test(address)) {
+        return res.status(400).json({
+            error: "Invalid Ethereum address format",
+            nodes: [],
+            edges: []
+        });
+    }
+
+    try {
+        if (!neo4jDriver) {
+            throw new Error("Database connection not available");
+        }
+
+        const session = neo4jDriver.session();
+        try {
+            // First check if this address exists
+            const checkAddress = await session.run(
+                `MATCH (w:Address {address: $address}) 
+                 RETURN w`,
+                { address }
+            );
+            
+            if (checkAddress.records.length === 0) {
+                console.log("Address not found in database:", address);
+                return res.json({
+                    nodes: [],
+                    edges: []
+                });
+            }
+            
+            // Check if we already have enough transaction data for this address
+            // Get the transactions from the database, but limit to most recent
+            const query = `
+                MATCH (w:Address {address: $address})
+                
+                // Find transactions involving this address
+                MATCH (w)-[t:HAS_TRANSACTION]-(other:Address)
+                WHERE other.address <> $address
+                
+                // Use the most recent transactions for more interesting results
+                WITH other, t
+                ORDER BY t.timeStamp DESC
+                LIMIT $limit
+                
+                // Get a limited number of unique addresses
+                WITH collect(DISTINCT other) as nodes, 
+                     collect(DISTINCT t) as txs
+                     
+                // Slice to avoid overwhelming the visualization
+                RETURN 
+                    nodes[0..$maxNodes] as nodes,
+                    txs[0..$maxTxs] as txs
+            `;
+            
+            const result = await session.run(query, { 
+                address,
+                limit: neo4j.int(limit),
+                maxNodes: neo4j.int(Math.min(limit, 10)), // Limit nodes to 10 max
+                maxTxs: neo4j.int(limit) // Keep all transactions up to limit
+            });
+            
+            // Always ensure we have a valid result record
+            if (result.records.length === 0) {
+                console.log("No transactions found for address:", address);
+                return res.json({
+                    nodes: [],
+                    edges: []
+                });
+            }
+            
+            const record = result.records[0];
+            
+            // Safely access nodes and transactions
+            const nodes = record.get("nodes") || [];
+            const txs = record.get("txs") || [];
+            
+            console.log(`Found ${nodes.length} nodes with ${txs.length} transactions`);
+            
+            // Transform nodes safely
+            const responseNodes = nodes.map(node => {
+                if (!node || !node.properties) {
+                    console.log("Warning: Invalid node:", node);
+                    return null;
+                }
+                
+                return {
+                    id: node.properties.address || "unknown",
+                    balance: node.properties.balance || "0",
+                    transactionCount: parseInt(node.properties.transactionCount) || 0
+                };
+            }).filter(Boolean); // Filter out null values
+            
+            // Transform transactions into edges
+            const responseEdges = [];
+            
+            for (const tx of txs) {
+                try {
+                    if (!tx || !tx.properties) {
+                        console.log("Warning: Invalid transaction:", tx);
+                        continue;
+                    }
+                    
+                    // Get connected nodes to determine source/target
+                    const startNode = tx.startNode;
+                    const endNode = tx.endNode;
+                    
+                    if (!startNode || !endNode || !startNode.properties || !endNode.properties) {
+                        console.log("Warning: Transaction missing start or end node");
+                        continue;
+                    }
+                    
+                    // Create edge for the graph visualization
+                    const edge = {
+                        source: startNode.properties.address,
+                        target: endNode.properties.address,
+                        hash: tx.properties.hash || "unknown",
+                        value: tx.properties.value || "0",
+                        timeStamp: tx.properties.timeStamp || "0",
+                        gasPrice: tx.properties.gasPrice || "0",
+                        gasUsed: tx.properties.gasUsed || "0", 
+                        blockNumber: tx.properties.blockNumber || "0",
+                        functionName: tx.properties.functionName || ""
+                    };
+                    
+                    // Ensure valid source/target (should be strings)
+                    if (typeof edge.source !== 'string' || typeof edge.target !== 'string') {
+                        console.log("Warning: Edge has invalid source or target:", edge);
+                        continue;
+                    }
+                    
+                    // Process value to ensure it's a valid string number
+                    if (edge.value && typeof edge.value === 'string') {
+                        const numValue = edge.value.replace(/[^0-9.]/g, '');
+                        edge.value = numValue || "0";
+                    }
+                    
+                    responseEdges.push(edge);
+                } catch (error) {
+                    console.log("Error processing transaction:", error);
+                }
+            }
+            
+            console.log(`Returning ${responseNodes.length} nodes and ${responseEdges.length} edges`);
+            
+            res.json({
+                nodes: responseNodes,
+                edges: responseEdges
+            });
+        } finally {
+            await session.close();
+        }
+    } catch (error) {
+        console.error("\nError fetching node transactions:", error);
+        res.status(500).json({
+            error: "Error fetching node transactions",
+            details: error.message,
+            nodes: [],
+            edges: []
+        });
+    }
+});
+
+// Add endpoint for initial graph data (just the wallet node)
+app.get("/api/graph/initial/:address", async (req, res) => {
+    const { address } = req.params;
+    
+    console.log("\n=== Fetching Initial Graph Data ===");
+    console.log("Address:", address);
+    
+    if (!/^0x[a-fA-F0-9]{40}$/.test(address)) {
+        return res.status(400).json({
+            error: "Invalid Ethereum address format",
+            nodes: [],
+            edges: []
+        });
+    }
+    
+    try {
+        if (!neo4jDriver) {
+            throw new Error("Database connection not available");
+        }
+        
+        const session = neo4jDriver.session();
+        try {
+            // Check if wallet exists in Neo4j
+            const walletCheck = await session.run(
+                `MATCH (w:Address {address: $address}) 
+                 RETURN w.balance as balance, w.transactionCount as txCount`,
+                { address }
+            );
+            
+            let walletInfo;
+            
+            if (walletCheck.records.length === 0) {
+                // If wallet doesn't exist, fetch from Etherscan and create it
+                console.log("Wallet not found in db, creating initial node");
+                
+                try {
+                    const etherscanData = await getEtherscanData(address, 1, 10);
+                    
+                    // Create the wallet node
+                    await session.run(
+                        `CREATE (w:Address {
+                            address: $address,
+                            balance: $balance,
+                            transactionCount: $txCount
+                        })
+                        RETURN w`,
+                        {
+                            address,
+                            balance: String(etherscanData.balance || "0"),
+                            txCount: neo4j.int(parseInt(etherscanData.transactionCount) || 0)
+                        }
+                    );
+                    
+                    walletInfo = {
+                        balance: etherscanData.balance || "0",
+                        transactionCount: parseInt(etherscanData.transactionCount) || 0
+                    };
+                } catch (ethError) {
+                    console.error("Error fetching from Etherscan:", ethError);
+                    // Return a minimal node even on error
+                    walletInfo = {
+                        balance: "0",
+                        transactionCount: 0
+                    };
+                }
+            } else {
+                console.log("Wallet found in db, using existing data");
+                const record = walletCheck.records[0];
+                walletInfo = {
+                    balance: record.get("balance") || "0",
+                    transactionCount: parseInt(record.get("txCount").toString()) || 0
+                };
+            }
+            
+            // Return just the main wallet node with no transactions yet
+            // (transactions will be loaded with the expand node API)
+            return res.json({
+                nodes: [
+                    {
+                        id: address,
+                        balance: walletInfo.balance,
+                        transactionCount: walletInfo.transactionCount
+                    }
+                ],
+                edges: []
+            });
+        } finally {
+            await session.close();
+        }
+    } catch (error) {
+        console.error("Error creating initial graph data:", error);
+        // Return minimal valid data even on error
+        res.status(500).json({
+            error: "Error creating initial graph data",
+            details: error.message,
+            nodes: [{
+                id: address,
+                balance: "0",
+                transactionCount: 0
+            }],
+            edges: []
+        });
     }
 });
 
