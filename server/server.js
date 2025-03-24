@@ -1661,22 +1661,27 @@ async function getEtherscanData(address, page = 1, offset = 10) {
             ? parseInt(txCountResponse.data.result, 16)
             : 0;
 
-        // Process transactions
-        const transactions =
-            txListResponse.data.result &&
-            Array.isArray(txListResponse.data.result)
-                ? txListResponse.data.result.map((tx) => ({
-                      hash: tx.hash,
-                      from: tx.from,
-                      to: tx.to,
-                      value: (parseFloat(tx.value) / 1e18).toFixed(6),
-                      timeStamp: tx.timeStamp,
-                      gasPrice: tx.gasPrice,
-                      gasUsed: tx.gasUsed,
-                      isError: tx.isError === "1",
-                      blockNumber: tx.blockNumber
-                  }))
-                : [];
+        // Process transactions - add null checks
+        const transactions = [];
+        
+        // Fix: Add proper null checks for txListResponse.data.result
+        if (txListResponse.data.result && Array.isArray(txListResponse.data.result)) {
+            txListResponse.data.result.forEach(tx => {
+                if (tx) {
+                    transactions.push({
+                        hash: tx.hash || '',
+                        from: tx.from || '',
+                        to: tx.to || '',
+                        value: tx.value ? (parseFloat(tx.value) / 1e18).toFixed(6) : '0.000000',
+                        timeStamp: tx.timeStamp || '',
+                        gasPrice: tx.gasPrice || '0',
+                        gasUsed: tx.gasUsed || '0',
+                        isError: tx.isError === "1",
+                        blockNumber: tx.blockNumber || '0'
+                    });
+                }
+            });
+        }
 
         return {
             address,
@@ -1689,7 +1694,18 @@ async function getEtherscanData(address, page = 1, offset = 10) {
         };
     } catch (error) {
         console.error(`[MAIN] Etherscan API Error: ${error.message}`);
-        throw new Error(`Failed to fetch wallet data: ${error.message}`);
+        
+        // Return a default structure even on error
+        return {
+            address,
+            balance: "0.000000",
+            transactionCount: 0,
+            totalFetchedTransactions: 0,
+            currentPage: page,
+            recentTransactions: [],
+            hasMoreTransactions: false,
+            error: error.message
+        };
     }
 }
 
@@ -1797,14 +1813,10 @@ app.get("/api/wallet/:address", async (req, res) => {
                 }
             );
 
-            // Process and store transactions for each page in Neo4j
-            for (let pageNum = 1; pageNum <= walletData.prefetchedPages.length; pageNum++) {
-                const pageTransactions = walletData.allTransactions.filter(tx => {
-                    const txIndex = walletData.allTransactions.indexOf(tx);
-                    return Math.floor(txIndex / 10) + 1 === pageNum;
-                });
-
-                for (const tx of pageTransactions) {
+            // Process and store transactions in Neo4j
+            // Fix: Check if transactions exist before processing them
+            if (walletData.recentTransactions && walletData.recentTransactions.length > 0) {
+                for (const tx of walletData.recentTransactions) {
                     // Ensure both addresses exist
                     await session.run(
                         `MERGE (from:Address {address: $fromAddress})
@@ -1834,7 +1846,7 @@ app.get("/api/wallet/:address", async (req, res) => {
                                     gasUsed: String(tx.gasUsed),
                                     type: "out",
                                     blockNumber: String(tx.blockNumber),
-                                    page: parseInt(pageNum)
+                                    page: 1
                                 },
                             }
                         );
@@ -1856,7 +1868,7 @@ app.get("/api/wallet/:address", async (req, res) => {
                                     gasUsed: String(tx.gasUsed),
                                     type: "in",
                                     blockNumber: String(tx.blockNumber),
-                                    page: parseInt(pageNum)
+                                    page: 1
                                 },
                             }
                         );
