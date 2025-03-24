@@ -26,8 +26,21 @@ const ETHERSCAN_API_URL = "https://api.etherscan.io/api";
 // get coingecko api url
 const COINGECKO_API_URL = "https://api.coingecko.com/api/v3";
 
-// Use memory storage instead of disk storage
-const storage = multer.memoryStorage();
+// Use disk storage instead of memory storage
+const storage = multer.diskStorage({
+    destination: (req, file, cb) => {
+        const uploadDir = path.join(__dirname, "uploads");
+        if (!fs.existsSync(uploadDir)) {
+            fs.mkdirSync(uploadDir, { recursive: true });
+        }
+        cb(null, uploadDir);
+    },
+    filename: (req, file, cb) => {
+        // Sanitize filename to remove spaces and special characters
+        const sanitizedFilename = file.originalname.replace(/\s+/g, '_').replace(/[^a-zA-Z0-9._-]/g, '');
+        cb(null, Date.now() + "-" + sanitizedFilename);
+    },
+});
 
 const upload = multer({
     storage: storage,
@@ -837,18 +850,17 @@ app.post(
                     });
                 }
 
-                filename = Date.now() + "-" + req.file.originalname;
-                filepath = path.join(uploadDir, filename);
+                // With disk storage, the file is already written to disk
+                filepath = req.file.path;
+                filename = req.file.filename;
                 console.log("[DEBUG] File path:", filepath);
 
-                // Write the buffer to file
-                fs.writeFileSync(filepath, req.file.buffer);
-                console.log("[DEBUG] Contract file written to disk");
-
-                // Calculate hash from normalized buffer content
+                // Read the file content to calculate the hash
+                const fileContent = fs.readFileSync(filepath, 'utf8');
+                // Calculate hash from normalized content
                 hash = crypto
                     .createHash("sha256")
-                    .update(normalizeSourceCode(req.file.buffer.toString()))
+                    .update(normalizeSourceCode(fileContent))
                     .digest("hex");
                 console.log("[DEBUG] Contract hash:", hash);
             } else {
@@ -877,11 +889,33 @@ app.post(
                     console.log(
                         "[DEBUG] Contract exists but failed, re-running analysis"
                     );
-                    // Update status to pending
-                    await mysqlPool.query(
-                        `UPDATE contracts SET status = 'pending' WHERE id = ?`,
+                    
+                    // Check if the file still exists at the filepath stored in the database
+                    const [contractDetails] = await mysqlPool.query(
+                        `SELECT filepath FROM contracts WHERE id = ?`,
                         [contractId]
                     );
+                    
+                    let existingFilePath = contractDetails[0]?.filepath;
+                    
+                    // If the file doesn't exist at the stored path, use the new file
+                    if (!existingFilePath || !fs.existsSync(existingFilePath)) {
+                        console.log(`[DEBUG] Previous file not found or not set, using new upload at: ${filepath}`);
+                        await mysqlPool.query(
+                            `UPDATE contracts SET status = 'pending', filepath = ? WHERE id = ?`,
+                            [filepath, contractId]
+                        );
+                    } else {
+                        // File exists, so we can use it - this is mostly for debugging
+                        console.log(`[DEBUG] Previous file found at: ${existingFilePath}, will be replaced with: ${filepath}`);
+                        
+                        // Update with the new file path
+                        await mysqlPool.query(
+                            `UPDATE contracts SET status = 'pending', filepath = ? WHERE id = ?`,
+                            [filepath, contractId]
+                        );
+                    }
+                    
                     // Start Slither analysis in the background
                     console.log(
                         "[DEBUG] Starting Slither analysis for failed contract",
@@ -961,6 +995,33 @@ async function runSlitherAnalysis(contractId, filePath) {
     console.log(`[DEBUG] Starting Slither analysis for contract ${contractId}`);
     console.log(`[DEBUG] File path: ${filePath}`);
 
+<<<<<<< HEAD
+=======
+    // Set a timeout for the entire analysis process (2 minutes)
+    const analysisTimeout = setTimeout(async () => {
+        console.error(
+            `[DEBUG] Analysis for contract ${contractId} timed out after 2 minutes`
+        );
+        await mysqlPool.query(
+            `UPDATE contracts SET status = 'failed' WHERE id = ?`,
+            [contractId]
+        );
+        
+        // Store timeout error information
+        await mysqlPool.query(
+            `INSERT INTO analysis_reports 
+             (contract_id, report_json, vulnerability_count) 
+             VALUES (?, ?, 0)`,
+            [
+                contractId,
+                JSON.stringify({
+                    error: "Analysis timed out after 2 minutes",
+                }),
+            ]
+        );
+    }, 2 * 60 * 1000);
+
+>>>>>>> multithreaded-worker-explorer
     try {
         // Update status to analyzing
         console.log(
@@ -970,6 +1031,26 @@ async function runSlitherAnalysis(contractId, filePath) {
             `UPDATE contracts SET status = 'analyzing' WHERE id = ?`,
             [contractId]
         );
+
+        // Verify file exists
+        if (!fs.existsSync(filePath)) {
+            console.error(`[DEBUG] File not found at: ${filePath}`);
+            
+            // Try to find the contract in the database to get updated file path
+            const [contracts] = await mysqlPool.query(
+                `SELECT filepath FROM contracts WHERE id = ?`,
+                [contractId]
+            );
+            
+            if (contracts.length > 0 && contracts[0].filepath && fs.existsSync(contracts[0].filepath)) {
+                console.log(`[DEBUG] Found alternative file path in database: ${contracts[0].filepath}`);
+                filePath = contracts[0].filepath;
+            } else {
+                throw new Error(`Contract file does not exist: ${filePath}`);
+            }
+        }
+
+        console.log(`[DEBUG] Confirmed file exists at: ${filePath}`);
 
         // Create output directory if it doesn't exist
         const outputDir = path.join(__dirname, "reports");
@@ -982,6 +1063,7 @@ async function runSlitherAnalysis(contractId, filePath) {
         console.log(`[DEBUG] Output path: ${outputPath}`);
 
         // Run Slither with JSON output using Python
+<<<<<<< HEAD
         const command = `python -m slither "${filePath}" --json "${outputPath}" --checklist`;
         console.log(`[DEBUG] Executing Slither command: ${command}`);
 
@@ -996,6 +1078,22 @@ async function runSlitherAnalysis(contractId, filePath) {
                     "Slither analysis failed - no output file generated"
                 );
             }
+=======
+        const normalizedFilePath = path.normalize(filePath);
+        const normalizedOutputPath = path.normalize(outputPath);
+        const command = `python -m slither "${normalizedFilePath}" --json "${normalizedOutputPath}"`;
+        console.log(`[DEBUG] Executing Slither command: ${command}`);
+
+        // Use execPromise to properly await command completion
+        try {
+            const { stdout, stderr } = await execPromise(command);
+            console.log(`[DEBUG] Slither stdout: ${stdout}`);
+            if (stderr) console.log(`[DEBUG] Slither stderr: ${stderr}`);
+        } catch (execError) {
+            console.error(`[DEBUG] Slither execution error:`, execError);
+            throw execError;
+        }
+>>>>>>> multithreaded-worker-explorer
 
             const reportContent = fs.readFileSync(outputPath, "utf8");
             if (!reportContent.trim()) {
@@ -1044,6 +1142,7 @@ async function runSlitherAnalysis(contractId, filePath) {
             throw new Error(`Slither analysis failed: ${execError.message}`);
         }
 
+<<<<<<< HEAD
         // Clean up
         if (fs.existsSync(filePath)) {
             console.log(`[DEBUG] Cleaning up temporary file: ${filePath}`);
@@ -1053,6 +1152,26 @@ async function runSlitherAnalysis(contractId, filePath) {
             console.log(`[DEBUG] Cleaning up output file: ${outputPath}`);
             fs.unlinkSync(outputPath);
         }
+=======
+        // Update contract status to completed
+        console.log(`[DEBUG] Updating contract status to 'completed'`);
+        await mysqlPool.query(
+            `UPDATE contracts SET status = 'completed' WHERE id = ?`,
+            [contractId]
+        );
+
+        console.log(
+            `[DEBUG] Analysis completed successfully for contract ${contractId}`
+        );
+
+        // No need to clean up the file if we want to be able to re-run the analysis later
+        // if (fs.existsSync(filePath)) {
+        //    console.log(`[DEBUG] Cleaning up temporary file: ${filePath}`);
+        //    fs.unlinkSync(filePath);
+        // }
+
+        clearTimeout(analysisTimeout);
+>>>>>>> multithreaded-worker-explorer
     } catch (error) {
         console.error(`[DEBUG] Fatal error in analysis:`, error);
         console.error(`[DEBUG] Error stack:`, error.stack);
@@ -1084,6 +1203,7 @@ async function runSlitherAnalysis(contractId, filePath) {
             console.error(`[DEBUG] Failed to store error:`, dbError);
         }
 
+<<<<<<< HEAD
         // Clean up
         if (fs.existsSync(filePath)) {
             console.log(
@@ -1097,6 +1217,17 @@ async function runSlitherAnalysis(contractId, filePath) {
             );
             fs.unlinkSync(outputPath);
         }
+=======
+        // No cleanup for now to retain the file for debugging
+        // if (fs.existsSync(filePath)) {
+        //     console.log(
+        //         `[DEBUG] Cleaning up temporary file after error: ${filePath}`
+        //     );
+        //     fs.unlinkSync(filePath);
+        // }
+
+        clearTimeout(analysisTimeout);
+>>>>>>> multithreaded-worker-explorer
     }
 }
 
