@@ -18,21 +18,20 @@ import {
   Snackbar,
   Link,
   Tabs,
-  Tab
+  Tab,
+  Table,
+  TableBody,
+  TableCell,
+  TableContainer,
+  TableHead,
+  TableRow
 } from '@mui/material';
 import AddIcon from '@mui/icons-material/Add';
 import ArrowForwardIcon from '@mui/icons-material/ArrowForward';
-import Table from '@mui/material/Table';
-import TableBody from '@mui/material/TableBody';
-import TableCell from '@mui/material/TableCell';
-import TableContainer from '@mui/material/TableContainer';
-import TableHead from '@mui/material/TableHead';
-import TableRow from '@mui/material/TableRow';
 import OpenInNewIcon from '@mui/icons-material/OpenInNew';
 import ContentCopyIcon from '@mui/icons-material/ContentCopy';
 import TimelineIcon from '@mui/icons-material/Timeline';
 import ListAltIcon from '@mui/icons-material/ListAlt';
-import TransactionGraph from './TransactionGraph';
 import AccountBalanceWalletIcon from '@mui/icons-material/AccountBalanceWallet';
 import AccountBalanceIcon from '@mui/icons-material/AccountBalance';
 import TrendingUpIcon from '@mui/icons-material/TrendingUp';
@@ -43,22 +42,13 @@ import WarningIcon from '@mui/icons-material/Warning';
 import ErrorIcon from '@mui/icons-material/Error';
 import CheckCircleIcon from '@mui/icons-material/CheckCircle';
 import PendingIcon from '@mui/icons-material/Pending';
+import TransactionGraph from './TransactionGraph';
 
-function WalletInfo({ loading, error, walletData, marketData, transactionHistory }) {
+function WalletInfo({ loading, error, walletData, marketData }) {
   const [copySuccess, setCopySuccess] = useState(false);
   const [activeTab, setActiveTab] = useState(0);
   const [graphData, setGraphData] = useState(null);
   const [graphLoading, setGraphLoading] = useState(false);
-  const [graphError, setGraphError] = useState(null);
-  const [metrics, setMetrics] = useState({
-    totalContracts: 0,
-    totalVulnerabilities: 0,
-    highSeverity: 0,
-    mediumSeverity: 0,
-    lowSeverity: 0,
-    analyzed: 0,
-    pending: 0
-  });
 
   const handleCopy = (text) => {
     navigator.clipboard.writeText(text);
@@ -77,20 +67,43 @@ function WalletInfo({ loading, error, walletData, marketData, transactionHistory
     }
   };
 
-  const formatDate = (dateString) => {
+  const formatDate = (timestamp) => {
     try {
+      console.log('Raw timestamp:', timestamp); // Debug log
       const now = new Date();
-      const date = new Date(dateString);
-      const diffDays = Math.floor((now - date) / (1000 * 60 * 60 * 24));
-      return `${diffDays} days ago`;
+      // Convert UNIX timestamp from seconds to milliseconds
+      const date = new Date(parseInt(timestamp) * 1000);
+
+      if (isNaN(date.getTime())) {
+        console.log('Invalid date from timestamp:', timestamp); // Debug log
+        return 'Invalid date';
+      }
+
+      const diffMs = now - date;
+      const diffSecs = Math.floor(diffMs / 1000);
+      const diffMins = Math.floor(diffSecs / 60);
+      const diffHours = Math.floor(diffMins / 60);
+      const diffDays = Math.floor(diffHours / 24);
+
+      if (diffSecs < 60) {
+        return `${diffSecs} secs ago`;
+      } else if (diffMins < 60) {
+        return `${diffMins} min${diffMins === 1 ? '' : 's'} ago`;
+      } else if (diffHours < 24) {
+        return `${diffHours} hr${diffHours === 1 ? '' : 's'} ago`;
+      } else if (diffDays < 30) {
+        return `${diffDays} day${diffDays === 1 ? '' : 's'} ago`;
+      } else {
+        return date.toLocaleDateString('en-US', { 
+          year: 'numeric', 
+          month: 'short', 
+          day: 'numeric'
+        });
+      }
     } catch (e) {
+      console.error('Date formatting error:', e, 'Timestamp:', timestamp);
       return 'Invalid date';
     }
-  };
-
-  const formatAddress = (address) => {
-    if (!address) return '';
-    return `${address.substring(0, 25)}...`;
   };
 
   const formatEthValue = (balance) => {
@@ -117,52 +130,16 @@ function WalletInfo({ loading, error, walletData, marketData, transactionHistory
     return from === wallet ? 'OUT' : 'IN';
   };
 
-  // For debugging
-  console.log('Transaction History:', transactionHistory);
-  console.log('Wallet Data:', walletData);
-
   const handleTabChange = (event, newValue) => {
     setActiveTab(newValue);
   };
 
-  // Add function to fetch graph data
-  const fetchGraphData = async (address) => {
-    if (!address) return;
-    
-    try {
-      setGraphLoading(true);
-      setGraphError(null);
-      
-      const response = await fetch(`http://localhost:5000/api/graph/wallet-graph/${address}`);
-      if (!response.ok) {
-        throw new Error('Failed to fetch graph data');
-      }
-      
-      const data = await response.json();
-      setGraphData(data);
-    } catch (err) {
-      console.error('Graph data fetch error:', err);
-      setGraphError(err.message);
-    } finally {
-      setGraphLoading(false);
-    }
-  };
-
-  // Fetch graph data when wallet address changes
-  useEffect(() => {
-    if (walletData?.address) {
-      fetchGraphData(walletData.address);
-    }
-  }, [walletData?.address]);
-
-  // Add console logs to debug data flow
   useEffect(() => {
     if (walletData?.address && activeTab === 1) {
       setGraphLoading(true);
       fetch(`http://localhost:5000/api/graph/wallet-graph/${walletData.address}`)
         .then(res => res.json())
         .then(data => {
-          console.log('Graph data received:', data);
           setGraphData(data);
         })
         .catch(err => {
@@ -174,112 +151,14 @@ function WalletInfo({ loading, error, walletData, marketData, transactionHistory
     }
   }, [walletData?.address, activeTab]);
 
-  useEffect(() => {
-    if (walletData?.contracts) {
-      const newMetrics = {
-        totalContracts: walletData.contracts.length,
-        totalVulnerabilities: 0,
-        highSeverity: 0,
-        mediumSeverity: 0,
-        lowSeverity: 0,
-        analyzed: 0,
-        pending: 0
-      };
-
-      walletData.contracts.forEach(contract => {
-        if (contract.vulnerabilities) {
-          contract.vulnerabilities.forEach(vuln => {
-            newMetrics.totalVulnerabilities++;
-            switch (vuln.severity.toLowerCase()) {
-              case 'high':
-                newMetrics.highSeverity++;
-                break;
-              case 'medium':
-                newMetrics.mediumSeverity++;
-                break;
-              case 'low':
-                newMetrics.lowSeverity++;
-                break;
-            }
-          });
-        }
-        if (contract.status === 'completed') {
-          newMetrics.analyzed++;
-        } else {
-          newMetrics.pending++;
-        }
-      });
-
-      setMetrics(newMetrics);
-    }
-  }, [walletData]);
-
-  const getSeverityColor = (severity) => {
-    switch (severity.toLowerCase()) {
-      case 'high':
-        return 'error';
-      case 'medium':
-        return 'warning';
-      case 'low':
-        return 'info';
-      default:
-        return 'default';
-    }
-  };
-
-  const getStatusColor = (status) => {
-    switch (status.toLowerCase()) {
-      case 'completed':
-        return 'success';
-      case 'pending':
-        return 'warning';
-      case 'failed':
-        return 'error';
-      default:
-        return 'default';
-    }
-  };
-
-  const getStatusIcon = (status) => {
-    switch (status.toLowerCase()) {
-      case 'completed':
-        return <CheckCircleIcon />;
-      case 'pending':
-        return <PendingIcon />;
-      case 'failed':
-        return <ErrorIcon />;
-      default:
-        return null;
-    }
-  };
-
-  if (loading || error || !walletData) {
-    return null; // Handle these states in parent component
-  }
-
   return (
-    <Container 
-      maxWidth={false}
-      sx={{ 
-        py: 4,
-        maxWidth: '1400px !important',
-        textAlign: 'center'
-      }}
-    >
+    <Container maxWidth={false} sx={{ maxWidth: '1400px !important', py: 4 }}>
       {loading && (
-        <Box 
-          display="flex" 
-          justifyContent="center" 
-          p={4}
-          sx={{
-            color: '#77838f',
-            fontSize: '1rem'
-          }}
-        >
+        <Box display="flex" justifyContent="center" p={4}>
           <CircularProgress />
         </Box>
       )}
-      
+
       {error && (
         <Alert 
           severity="error" 
@@ -287,11 +166,7 @@ function WalletInfo({ loading, error, walletData, marketData, transactionHistory
             mb: 2,
             bgcolor: '#fff5f5',
             border: '1px solid #feb2b2',
-            borderRadius: 2,
-            color: '#c53030',
-            '& .MuiAlert-message': {
-              fontSize: '0.9rem'
-            }
+            borderRadius: 2
           }}
         >
           {error}
@@ -299,315 +174,472 @@ function WalletInfo({ loading, error, walletData, marketData, transactionHistory
       )}
 
       {walletData && (
-        <Paper 
-          elevation={0}
-          sx={{
-            bgcolor: '#fff',
-            borderRadius: 2,
-            border: '1px solid #e7eaf3',
-            overflow: 'hidden'
-          }}
-        >
-          <Box p={3}>
-            <Typography 
-              variant="h5" 
-              sx={{
-                mb: 0,
-                p: '1rem 1.5rem',
-                bgcolor: '#f8f9fa',
-                borderBottom: '1px solid #e7eaf3',
-                fontSize: '1.25rem',
-                color: '#1e2022',
-                textAlign: 'center'
-              }}
-            >
-              Wallet Information
-            </Typography>
-            <Divider sx={{ mb: 3 }} />
-            
-            <Grid container spacing={3}>
-              {/* Overview Section */}
-              <Grid item xs={12} md={4}>
-                <Paper 
-                  elevation={0}
-                  sx={{
-                    p: 3,
-                    border: '1px solid #e7eaf3',
-                    borderRadius: 2,
-                    height: '100%'
-                  }}
-                >
-                  <Typography variant="h6" sx={{ mb: 3, color: '#1e2022' }}>
-                    Overview
-                  </Typography>
-                  
-                  <Stack spacing={3}>
-                    <Box>
-                      <Typography variant="subtitle2" color="text.secondary" gutterBottom>
-                        ETH BALANCE
-                      </Typography>
-                      <Typography variant="h6" sx={{ color: '#1e2022' }}>
-                        {walletData.balance} ETH
-                      </Typography>
-                    </Box>
-
-                    <Box>
-                      <Typography variant="subtitle2" color="text.secondary" gutterBottom>
-                        ETH VALUE
-                      </Typography>
-                      <Typography variant="h6" sx={{ color: '#1e2022' }}>
-                        ${formatEthValue(walletData.balance)} 
-                        <Typography 
-                          component="span" 
-                          variant="body2" 
-                          color="text.secondary"
-                          sx={{ ml: 1 }}
-                        >
-                          (@ ${formatEthPrice(marketData?.price)}/ETH)
-                        </Typography>
-                      </Typography>
-                    </Box>
-
-                    <Box>
-                      <Typography variant="subtitle2" color="text.secondary" gutterBottom>
-                        TOKEN BALANCE
-                      </Typography>
-                      <Typography variant="h6" sx={{ color: '#1e2022' }}>
-                        {walletData.tokenBalance || '0'} TOKENS
-                      </Typography>
-                    </Box>
-
-                    <Box>
-                      <Typography variant="subtitle2" color="text.secondary" gutterBottom>
-                        TOKEN VALUE
-                      </Typography>
-                      <Typography variant="h6" sx={{ color: '#1e2022' }}>
-                        ${walletData.tokenValue || '0'} 
-                        <Typography 
-                          component="span" 
-                          variant="body2" 
-                          color="text.secondary"
-                          sx={{ ml: 1 }}
-                        >
-                          (@ ${marketData?.tokenPrice || '0'}/TOKEN)
-                        </Typography>
-                      </Typography>
-                    </Box>
-                  </Stack>
-                </Paper>
-              </Grid>
-
-              {/* More Info Section */}
-              <Grid item xs={12} md={8}>
-                <Paper 
-                  elevation={0}
-                  sx={{
-                    p: 3,
-                    border: '1px solid #e7eaf3',
-                    borderRadius: 2,
-                    height: '100%'
-                  }}
-                >
-                  <Typography variant="h6" sx={{ mb: 3, color: '#1e2022' }}>
-                    More Info
-                  </Typography>
-
-                  <Stack spacing={3}>
-                    <Box>
-                      <Typography variant="subtitle2" color="text.secondary" gutterBottom>
-                        PRIVATE NAME TAGS
-                      </Typography>
-                      <Button
-                        startIcon={<AddIcon />}
-                        variant="outlined"
-                        size="small"
-                        sx={{
-                          color: '#3498db',
-                          borderColor: '#3498db',
-                          '&:hover': {
-                            borderColor: '#2980b9',
-                            bgcolor: 'transparent'
-                          }
+        <>
+          {/* Overview Cards */}
+          <Grid container spacing={3} sx={{ mb: 4 }}>
+            {/* Address Card */}
+            <Grid item xs={12}>
+              <Paper 
+                elevation={0}
+                sx={{
+                  p: 3,
+                  border: '1px solid #e7eaf3',
+                  borderRadius: 2,
+                  bgcolor: '#fff'
+                }}
+              >
+                <Stack direction="row" alignItems="center" spacing={2}>
+                  <AccountBalanceWalletIcon sx={{ fontSize: 32, color: '#3498db' }} />
+                  <Box>
+                    <Typography variant="h6" sx={{ color: '#1e2022', mb: 0.5 }}>
+                      Address
+                    </Typography>
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                      <Typography 
+                        variant="body1" 
+                        sx={{ 
+                          fontFamily: 'monospace',
+                          fontSize: '1rem',
+                          color: '#2d3748'
                         }}
                       >
-                        Add
-                      </Button>
+                        {walletData.address}
+                      </Typography>
+                      <Tooltip title="Copy address">
+                        <IconButton 
+                          size="small" 
+                          onClick={() => handleCopy(walletData.address)}
+                          sx={{ color: '#718096' }}
+                        >
+                          <ContentCopyIcon fontSize="small" />
+                        </IconButton>
+                      </Tooltip>
+                      <Tooltip title="View on Etherscan">
+                        <IconButton 
+                          size="small"
+                          component="a"
+                          href={getEtherscanLink('address', walletData.address)}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          sx={{ color: '#718096' }}
+                        >
+                          <OpenInNewIcon fontSize="small" />
+                        </IconButton>
+                      </Tooltip>
                     </Box>
+                  </Box>
+                </Stack>
 
-                    <Box>
-                      <Typography variant="subtitle2" color="text.secondary" gutterBottom>
+                {/* Additional Wallet Info */}
+                <Grid container spacing={3} sx={{ mt: 2 }}>
+                  {/* Transaction History */}
+                  <Grid item xs={12} md={4}>
+                    <Box sx={{ p: 2, bgcolor: '#f8fafc', borderRadius: 1 }}>
+                      <Typography variant="subtitle2" color="text.secondary" sx={{ mb: 2 }}>
                         TRANSACTIONS SENT
                       </Typography>
-                      <Stack direction="row" spacing={4} alignItems="center">
+                      <Stack direction="row" spacing={4}>
                         <Box>
                           <Typography variant="body2" color="text.secondary">
                             Latest:
                           </Typography>
-                          <Typography 
-                            variant="body1" 
-                            sx={{ 
-                              color: '#3498db',
-                              display: 'flex',
-                              alignItems: 'center',
-                              gap: 0.5
-                            }}
-                          >
-                            {formatDate(walletData.lastTransaction)}
-                            <ArrowForwardIcon fontSize="small" />
+                          <Typography variant="body1" sx={{ color: '#2d3748' }}>
+                            {walletData.recentTransactions?.[0]?.timeStamp ? 
+                              formatDate(walletData.recentTransactions[0].timeStamp) : 
+                              'N/A'}
                           </Typography>
                         </Box>
                         <Box>
                           <Typography variant="body2" color="text.secondary">
                             First:
                           </Typography>
-                          <Typography 
-                            variant="body1" 
-                            sx={{ 
-                              color: '#3498db',
-                              display: 'flex',
-                              alignItems: 'center',
-                              gap: 0.5
-                            }}
-                          >
-                            {formatDate(walletData.firstTransaction)}
-                            <ArrowForwardIcon fontSize="small" />
+                          <Typography variant="body1" sx={{ color: '#2d3748' }}>
+                            {walletData.recentTransactions?.[walletData.recentTransactions.length - 1]?.timeStamp ? 
+                              formatDate(walletData.recentTransactions[walletData.recentTransactions.length - 1].timeStamp) : 
+                              'N/A'}
                           </Typography>
                         </Box>
                       </Stack>
                     </Box>
+                  </Grid>
 
-                    {walletData.fundedBy && (
-                      <Box>
-                        <Typography variant="subtitle2" color="text.secondary" gutterBottom>
-                          FUNDED BY
-                        </Typography>
-                        <Typography 
-                          variant="body1" 
-                          sx={{ 
+                  {/* Latest Block */}
+                  <Grid item xs={12} md={4}>
+                    <Box sx={{ p: 2, bgcolor: '#f8fafc', borderRadius: 1 }}>
+                      <Typography variant="subtitle2" color="text.secondary" sx={{ mb: 2 }}>
+                        LATEST BLOCK
+                      </Typography>
+                      {walletData.recentTransactions?.[0]?.blockNumber ? (
+                        <Link
+                          href={`https://etherscan.io/block/${walletData.recentTransactions[0].blockNumber}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          sx={{
+                            textDecoration: 'none',
                             color: '#3498db',
-                            wordBreak: 'break-all'
+                            '&:hover': { color: '#2980b9' },
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: 0.5
                           }}
                         >
-                          {walletData.fundedBy}
+                          <Typography variant="body1" sx={{ fontFamily: 'monospace' }}>
+                            #{walletData.recentTransactions[0].blockNumber}
+                          </Typography>
+                          <OpenInNewIcon sx={{ fontSize: 16 }} />
+                        </Link>
+                      ) : (
+                        <Typography variant="body2" color="text.secondary">
+                          No transactions found
                         </Typography>
-                      </Box>
-                    )}
-                  </Stack>
-                </Paper>
-              </Grid>
-            </Grid>
-          </Box>
-        </Paper>
-      )}
+                      )}
+                    </Box>
+                  </Grid>
 
-      {/* Transactions Section with Tabs */}
-      {walletData?.recentTransactions && (
-        <Paper 
-          elevation={0}
-          sx={{
-            border: '1px solid #e7eaf3',
-            borderRadius: 2,
-            overflow: 'hidden',
-            mt: 4
-          }}
-        >
-          <Box sx={{ borderBottom: '1px solid #e7eaf3' }}>
-            <Tabs 
-              value={activeTab} 
-              onChange={handleTabChange}
-              sx={{
-                px: 3,
-                '& .MuiTab-root': {
-                  textTransform: 'none',
-                  minHeight: '64px',
-                  fontSize: '1rem'
-                }
+                  {/* Funded By */}
+                  <Grid item xs={12} md={4}>
+                    <Box sx={{ p: 2, bgcolor: '#f8fafc', borderRadius: 1 }}>
+                      <Typography variant="subtitle2" color="text.secondary" sx={{ mb: 2 }}>
+                        FUNDED BY
+                      </Typography>
+                      {walletData.recentTransactions?.find(tx => 
+                        getTransactionType(tx, walletData.address) === 'IN'
+                      ) ? (
+                        <Link
+                          href={getEtherscanLink('address', 
+                            walletData.recentTransactions.find(tx => 
+                              getTransactionType(tx, walletData.address) === 'IN'
+                            ).from
+                          )}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          sx={{
+                            textDecoration: 'none',
+                            color: '#3498db',
+                            '&:hover': { color: '#2980b9' },
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: 0.5
+                          }}
+                        >
+                          <Typography variant="body1" sx={{ fontFamily: 'monospace' }}>
+                            {walletData.recentTransactions.find(tx => 
+                              getTransactionType(tx, walletData.address) === 'IN'
+                            ).from.substring(0, 16)}...
+                          </Typography>
+                          <OpenInNewIcon sx={{ fontSize: 16 }} />
+                        </Link>
+                      ) : (
+                        <Typography variant="body2" color="text.secondary">
+                          No incoming transactions found
+                        </Typography>
+                      )}
+                    </Box>
+                  </Grid>
+                </Grid>
+              </Paper>
+            </Grid>
+
+            {/* Balance Card */}
+            <Grid item xs={12} md={4}>
+              <Paper 
+                elevation={0}
+                sx={{
+                  height: '100%',
+                  p: 3,
+                  border: '1px solid #e7eaf3',
+                  borderRadius: 2,
+                  bgcolor: '#fff',
+                  transition: 'transform 0.2s',
+                  '&:hover': {
+                    transform: 'translateY(-4px)'
+                  }
+                }}
+              >
+                <Stack spacing={2}>
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                    <AccountBalanceIcon sx={{ color: '#3498db' }} />
+                    <Typography variant="subtitle2" color="text.secondary">
+                      BALANCE
+                    </Typography>
+                  </Box>
+                  <Typography variant="h4" sx={{ color: '#2d3748', fontWeight: 600 }}>
+                    {walletData.balance} ETH
+                  </Typography>
+                  <Typography variant="body2" color="text.secondary">
+                    ${formatEthValue(walletData.balance)}
+                    <Typography 
+                      component="span" 
+                      variant="caption" 
+                      sx={{ ml: 1, color: '#718096' }}
+                    >
+                      @ ${formatEthPrice(marketData?.price)}/ETH
+                    </Typography>
+                  </Typography>
+                </Stack>
+              </Paper>
+            </Grid>
+
+            {/* Transaction Count Card */}
+            <Grid item xs={12} md={4}>
+              <Paper 
+                elevation={0}
+                sx={{
+                  height: '100%',
+                  p: 3,
+                  border: '1px solid #e7eaf3',
+                  borderRadius: 2,
+                  bgcolor: '#fff',
+                  transition: 'transform 0.2s',
+                  '&:hover': {
+                    transform: 'translateY(-4px)'
+                  }
+                }}
+              >
+                <Stack spacing={2}>
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                    <TimelineIcon sx={{ color: '#3498db' }} />
+                    <Typography variant="subtitle2" color="text.secondary">
+                      TRANSACTIONS
+                    </Typography>
+                  </Box>
+                  <Typography variant="h4" sx={{ color: '#2d3748', fontWeight: 600 }}>
+                    {walletData.transactionCount || 0}
+                  </Typography>
+                  <Typography variant="body2" color="text.secondary">
+                    Total transactions
+                  </Typography>
+                </Stack>
+              </Paper>
+            </Grid>
+
+            {/* Token Balance Card */}
+            <Grid item xs={12} md={4}>
+              <Paper 
+                elevation={0}
+                sx={{
+                  height: '100%',
+                  p: 3,
+                  border: '1px solid #e7eaf3',
+                  borderRadius: 2,
+                  bgcolor: '#fff',
+                  transition: 'transform 0.2s',
+                  '&:hover': {
+                    transform: 'translateY(-4px)'
+                  }
+                }}
+              >
+                <Stack spacing={2}>
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                    <SecurityIcon sx={{ color: '#3498db' }} />
+                    <Typography variant="subtitle2" color="text.secondary">
+                      TOKEN BALANCE
+                    </Typography>
+                  </Box>
+                  <Typography variant="h4" sx={{ color: '#2d3748', fontWeight: 600 }}>
+                    {walletData.tokenBalance || 0}
+                  </Typography>
+                  <Typography variant="body2" color="text.secondary">
+                    Unique tokens
+                  </Typography>
+                </Stack>
+              </Paper>
+            </Grid>
+          </Grid>
+
+          {/* Transactions Section */}
+          <Paper 
+            elevation={0}
+            sx={{
+              border: '1px solid #e7eaf3',
+              borderRadius: 2,
+              overflow: 'hidden',
+              bgcolor: '#fff'
+            }}
+          >
+            <Box sx={{ borderBottom: '1px solid #e7eaf3' }}>
+              <Tabs 
+                value={activeTab} 
+                onChange={handleTabChange}
+                sx={{
+                  px: 3,
+                  '& .MuiTab-root': {
+                    textTransform: 'none',
+                    minHeight: '64px',
+                    fontSize: '1rem'
+                  }
+                }}
+              >
+                <Tab 
+                  icon={<ListAltIcon />} 
+                  iconPosition="start" 
+                  label="Transactions" 
+                />
+                <Tab 
+                  icon={<TimelineIcon />} 
+                  iconPosition="start" 
+                  label="Graph View" 
+                />
+              </Tabs>
+            </Box>
+
+            {/* Section Title and Description */}
+            <Box 
+              sx={{ 
+                p: 4,
+                borderBottom: '1px solid #e7eaf3',
+                background: 'linear-gradient(to right, #f8f9fa, #ffffff)',
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+                textAlign: 'center'
               }}
             >
-              <Tab 
-                icon={<ListAltIcon />} 
-                iconPosition="start" 
-                label="Transactions" 
-              />
-              <Tab 
-                icon={<TimelineIcon />} 
-                iconPosition="start" 
-                label="Graph View" 
-              />
-            </Tabs>
-          </Box>
+              <Box 
+                sx={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: 2,
+                  mb: 2
+                }}
+              >
+                {activeTab === 0 ? (
+                  <ListAltIcon sx={{ color: '#3498db', fontSize: 40 }} />
+                ) : (
+                  <TimelineIcon sx={{ color: '#3498db', fontSize: 40 }} />
+                )}
+                <Typography 
+                  variant="h4" 
+                  sx={{ 
+                    color: '#2d3748',
+                    fontWeight: 600,
+                    letterSpacing: '-0.5px'
+                  }}
+                >
+                  {activeTab === 0 ? 'Transaction History' : 'Transaction Network Graph'}
+                </Typography>
+              </Box>
+              <Box 
+                sx={{ 
+                  maxWidth: '800px',
+                  position: 'relative',
+                  '&::before': {
+                    content: '""',
+                    position: 'absolute',
+                    top: '-12px',
+                    left: '50%',
+                    transform: 'translateX(-50%)',
+                    width: '60px',
+                    height: '4px',
+                    backgroundColor: '#3498db',
+                    borderRadius: '2px'
+                  }
+                }}
+              >
+                <Typography 
+                  variant="h6" 
+                  sx={{ 
+                    color: '#718096',
+                    fontWeight: 400,
+                    lineHeight: 1.5
+                  }}
+                >
+                  {activeTab === 0 ? (
+                    'Explore the complete transaction history for this address. Track all incoming and outgoing transfers, monitor transaction values, and analyze patterns over time.'
+                  ) : (
+                    'Discover the interconnected network of transactions. This interactive visualization helps you understand transaction flows and identify key relationships between addresses.'
+                  )}
+                </Typography>
+              </Box>
+              {activeTab === 0 && (
+                <Box sx={{ mt: 3, display: 'flex', gap: 3 }}>
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                    <Chip 
+                      label="IN" 
+                      size="small"
+                      sx={{ 
+                        bgcolor: '#e8f5e9',
+                        color: '#2ecc71',
+                        fontWeight: 500,
+                        minWidth: '60px'
+                      }}
+                    />
+                    <Typography variant="body2" color="#718096">Incoming Transfers</Typography>
+                  </Box>
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                    <Chip 
+                      label="OUT" 
+                      size="small"
+                      sx={{ 
+                        bgcolor: '#fff5f5',
+                        color: '#e74c3c',
+                        fontWeight: 500,
+                        minWidth: '60px'
+                      }}
+                    />
+                    <Typography variant="body2" color="#718096">Outgoing Transfers</Typography>
+                  </Box>
+                </Box>
+              )}
+            </Box>
 
-          {/* Transactions Tab Content */}
-          {activeTab === 0 && (
-            <TableContainer>
-              <Table sx={{ minWidth: 650 }}>
-                <TableHead>
-                  <TableRow sx={{ bgcolor: '#f8f9fa' }}>
-                    <TableCell sx={{ color: '#77838f', fontWeight: 500 }}>Hash</TableCell>
-                    <TableCell sx={{ color: '#77838f', fontWeight: 500 }}>From</TableCell>
-                    <TableCell align="center" sx={{ color: '#77838f', fontWeight: 500 }}>Type</TableCell>
-                    <TableCell sx={{ color: '#77838f', fontWeight: 500 }}>To</TableCell>
-                    <TableCell sx={{ color: '#77838f', fontWeight: 500 }}>Value</TableCell>
-                    <TableCell sx={{ color: '#77838f', fontWeight: 500 }}>Date</TableCell>
-                  </TableRow>
-                </TableHead>
-                <TableBody>
-                  {walletData.recentTransactions.length > 0 ? (
-                    walletData.recentTransactions.map((tx) => (
-                      <TableRow 
-                        key={`${tx.hash}-${tx.timestamp}`}
-                        sx={{ 
-                          '&:hover': { 
-                            bgcolor: '#f8f9fa' 
-                          }
-                        }}
-                      >
-                        <TableCell>
-                          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                            <Link
-                              href={getEtherscanLink('transaction', tx.hash)}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              sx={{
-                                textDecoration: 'none',
-                                display: 'flex',
-                                alignItems: 'center',
-                                gap: 1
-                              }}
-                            >
-                              <Typography 
-                                variant="body2" 
-                                sx={{ 
+            {/* Transactions Tab Content */}
+            {activeTab === 0 && (
+              <TableContainer>
+                <Table>
+                  <TableHead>
+                    <TableRow sx={{ bgcolor: '#f8f9fa' }}>
+                      <TableCell sx={{ color: '#718096', fontWeight: 500 }}>Hash</TableCell>
+                      <TableCell sx={{ color: '#718096', fontWeight: 500 }}>From</TableCell>
+                      <TableCell align="center" sx={{ color: '#718096', fontWeight: 500 }}>Type</TableCell>
+                      <TableCell sx={{ color: '#718096', fontWeight: 500 }}>To</TableCell>
+                      <TableCell sx={{ color: '#718096', fontWeight: 500 }}>Value</TableCell>
+                      <TableCell sx={{ color: '#718096', fontWeight: 500 }}>Age</TableCell>
+                    </TableRow>
+                  </TableHead>
+                  <TableBody>
+                    {walletData.recentTransactions?.length > 0 ? (
+                      walletData.recentTransactions.map((tx) => (
+                        <TableRow 
+                          key={tx.hash}
+                          sx={{ 
+                            '&:hover': { 
+                              bgcolor: '#f8f9fa' 
+                            }
+                          }}
+                        >
+                          <TableCell>
+                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                              <Link
+                                href={getEtherscanLink('transaction', tx.hash)}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                sx={{
+                                  textDecoration: 'none',
                                   color: '#3498db',
-                                  '&:hover': { color: '#2980b9' }
+                                  '&:hover': { color: '#2980b9' },
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  gap: 0.5
                                 }}
                               >
-                                {tx.hash.substring(0, 16)}...
-                              </Typography>
-                              <OpenInNewIcon sx={{ fontSize: 16, color: '#77838f' }} />
-                            </Link>
-                            <Tooltip title="Copy hash">
-                              <IconButton 
-                                size="small"
-                                onClick={() => handleCopy(tx.hash)}
-                                sx={{ 
-                                  ml: 1,
-                                  color: '#77838f',
-                                  '&:hover': { color: '#3498db' }
-                                }}
-                              >
-                                <ContentCopyIcon sx={{ fontSize: 16 }} />
-                              </IconButton>
-                            </Tooltip>
-                          </Box>
-                        </TableCell>
-                        <TableCell>
-                          <Box sx={{ 
-                            display: 'flex', 
-                            alignItems: 'center',
-                            justifyContent: 'space-between',
-                            width: '100%'
-                          }}>
+                                <Typography variant="body2" sx={{ fontFamily: 'monospace' }}>
+                                  {tx.hash.substring(0, 16)}...
+                                </Typography>
+                                <OpenInNewIcon sx={{ fontSize: 16 }} />
+                              </Link>
+                              <Tooltip title="Copy hash">
+                                <IconButton 
+                                  size="small"
+                                  onClick={() => handleCopy(tx.hash)}
+                                  sx={{ color: '#718096' }}
+                                >
+                                  <ContentCopyIcon sx={{ fontSize: 16 }} />
+                                </IconButton>
+                              </Tooltip>
+                            </Box>
+                          </TableCell>
+                          <TableCell>
                             <Link
                               href={getEtherscanLink('address', tx.from)}
                               target="_blank"
@@ -615,59 +647,31 @@ function WalletInfo({ loading, error, walletData, marketData, transactionHistory
                               sx={{
                                 textDecoration: 'none',
                                 color: '#3498db',
-                                '&:hover': { color: '#2980b9' },
-                                maxWidth: 'calc(100% - 40px)', // Leave space for the copy button
+                                '&:hover': { color: '#2980b9' }
                               }}
                             >
-                              <Typography 
-                                variant="body2"
-                                sx={{
-                                  overflow: 'hidden',
-                                  textOverflow: 'ellipsis',
-                                  whiteSpace: 'nowrap'
-                                }}
-                              >
-                                {tx.from}
+                              <Typography variant="body2" sx={{ fontFamily: 'monospace' }}>
+                                {tx.from.substring(0, 16)}...
                               </Typography>
                             </Link>
-                            <Tooltip title="Copy address">
-                              <IconButton 
-                                size="small"
-                                onClick={() => handleCopy(tx.from)}
-                                sx={{ 
-                                  color: '#77838f',
-                                  '&:hover': { color: '#3498db' },
-                                  ml: 1
-                                }}
-                              >
-                                <ContentCopyIcon sx={{ fontSize: 16 }} />
-                              </IconButton>
-                            </Tooltip>
-                          </Box>
-                        </TableCell>
-                        <TableCell align="center">
-                          <Chip 
-                            label={getTransactionType(tx, walletData.address)}
-                            size="small"
-                            sx={{ 
-                              bgcolor: getTransactionType(tx, walletData.address) === 'IN' 
-                                ? '#e8f5e9' 
-                                : '#fff5f5',
-                              color: getTransactionType(tx, walletData.address) === 'IN' 
-                                ? '#2ecc71' 
-                                : '#e74c3c',
-                              fontWeight: 500,
-                              minWidth: '60px'
-                            }}
-                          />
-                        </TableCell>
-                        <TableCell>
-                          <Box sx={{ 
-                            display: 'flex', 
-                            alignItems: 'center',
-                            justifyContent: 'space-between',
-                            width: '100%'
-                          }}>
+                          </TableCell>
+                          <TableCell align="center">
+                            <Chip 
+                              label={getTransactionType(tx, walletData.address)}
+                              size="small"
+                              sx={{ 
+                                bgcolor: getTransactionType(tx, walletData.address) === 'IN' 
+                                  ? '#e8f5e9' 
+                                  : '#fff5f5',
+                                color: getTransactionType(tx, walletData.address) === 'IN' 
+                                  ? '#2ecc71' 
+                                  : '#e74c3c',
+                                fontWeight: 500,
+                                minWidth: '60px'
+                              }}
+                            />
+                          </TableCell>
+                          <TableCell>
                             <Link
                               href={getEtherscanLink('address', tx.to)}
                               target="_blank"
@@ -675,193 +679,61 @@ function WalletInfo({ loading, error, walletData, marketData, transactionHistory
                               sx={{
                                 textDecoration: 'none',
                                 color: '#3498db',
-                                '&:hover': { color: '#2980b9' },
-                                maxWidth: 'calc(100% - 40px)', // Leave space for the copy button
+                                '&:hover': { color: '#2980b9' }
                               }}
                             >
-                              <Typography 
-                                variant="body2"
-                                sx={{
-                                  overflow: 'hidden',
-                                  textOverflow: 'ellipsis',
-                                  whiteSpace: 'nowrap'
-                                }}
-                              >
-                                {tx.to}
+                              <Typography variant="body2" sx={{ fontFamily: 'monospace' }}>
+                                {tx.to.substring(0, 16)}...
                               </Typography>
                             </Link>
-                            <Tooltip title="Copy address">
-                              <IconButton 
-                                size="small"
-                                onClick={() => handleCopy(tx.to)}
-                                sx={{ 
-                                  color: '#77838f',
-                                  '&:hover': { color: '#3498db' },
-                                  ml: 1
-                                }}
-                              >
-                                <ContentCopyIcon sx={{ fontSize: 16 }} />
-                              </IconButton>
-                            </Tooltip>
-                          </Box>
-                        </TableCell>
-                        <TableCell>
-                          <Typography variant="body2">
-                            {tx.value} ETH
-                          </Typography>
-                        </TableCell>
-                        <TableCell>
-                          <Typography variant="body2" color="text.secondary">
-                            {formatDate(tx.timestamp)}
+                          </TableCell>
+                          <TableCell>
+                            <Typography variant="body2" sx={{ fontFamily: 'monospace' }}>
+                              {tx.value} ETH
+                            </Typography>
+                          </TableCell>
+                          <TableCell>
+                            <Typography variant="body2" color="text.secondary">
+                              {formatDate(tx.timeStamp)}
+                            </Typography>
+                          </TableCell>
+                        </TableRow>
+                      ))
+                    ) : (
+                      <TableRow>
+                        <TableCell colSpan={6} align="center">
+                          <Typography color="text.secondary">
+                            No transactions found
                           </Typography>
                         </TableCell>
                       </TableRow>
-                    ))
-                  ) : (
-                    <TableRow>
-                      <TableCell colSpan={6} align="center">
-                        <Typography color="text.secondary">
-                          No transactions found
-                        </Typography>
-                      </TableCell>
-                    </TableRow>
-                  )}
-                </TableBody>
-              </Table>
-            </TableContainer>
-          )}
+                    )}
+                  </TableBody>
+                </Table>
+              </TableContainer>
+            )}
 
-          {/* Graph View Tab Content */}
-          {activeTab === 1 && (
-            <Box sx={{ p: 3, minHeight: 600 }}>
-              {graphLoading ? (
-                <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: 600 }}>
-                  <CircularProgress />
-                </Box>
-              ) : !graphData ? (
-                <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: 600 }}>
-                  <Typography color="text.secondary">No graph data available</Typography>
-                </Box>
-              ) : (
-                <TransactionGraph 
-                  data={graphData} 
-                  walletAddress={walletData.address}
-                />
-              )}
-            </Box>
-          )}
-        </Paper>
-      )}
-
-      {/* Contract History Section */}
-      {walletData?.contracts && walletData.contracts.length > 0 && (
-        <Paper 
-          elevation={0}
-          sx={{
-            border: '1px solid #e7eaf3',
-            borderRadius: 2,
-            overflow: 'hidden',
-            mt: 4
-          }}
-        >
-          <Box sx={{ borderBottom: '1px solid #e7eaf3', p: 3 }}>
-            <Typography variant="h6" sx={{ color: '#1e2022' }}>
-              Contract History
-            </Typography>
-          </Box>
-
-          <TableContainer>
-            <Table sx={{ minWidth: 650 }}>
-              <TableHead>
-                <TableRow sx={{ bgcolor: '#f8f9fa' }}>
-                  <TableCell sx={{ color: '#77838f', fontWeight: 500 }}>Contract Address</TableCell>
-                  <TableCell sx={{ color: '#77838f', fontWeight: 500 }}>Status</TableCell>
-                  <TableCell sx={{ color: '#77838f', fontWeight: 500 }}>Vulnerabilities</TableCell>
-                  <TableCell sx={{ color: '#77838f', fontWeight: 500 }}>Last Analyzed</TableCell>
-                </TableRow>
-              </TableHead>
-              <TableBody>
-                {walletData.contracts.map((contract, index) => (
-                  <TableRow 
-                    key={`${contract.address}-${index}`}
-                    sx={{ 
-                      '&:hover': { 
-                        bgcolor: '#f8f9fa' 
-                      }
-                    }}
-                  >
-                    <TableCell>
-                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                        <Link
-                          href={getEtherscanLink('address', contract.address)}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          sx={{
-                            textDecoration: 'none',
-                            display: 'flex',
-                            alignItems: 'center',
-                            gap: 1
-                          }}
-                        >
-                          <Typography 
-                            variant="body2" 
-                            sx={{ 
-                              color: '#3498db',
-                              '&:hover': { color: '#2980b9' }
-                            }}
-                          >
-                            {contract.address.substring(0, 16)}...
-                          </Typography>
-                          <OpenInNewIcon sx={{ fontSize: 16, color: '#77838f' }} />
-                        </Link>
-                        <Tooltip title="Copy address">
-                          <IconButton 
-                            size="small"
-                            onClick={() => handleCopy(contract.address)}
-                            sx={{ 
-                              ml: 1,
-                              color: '#77838f',
-                              '&:hover': { color: '#3498db' }
-                            }}
-                          >
-                            <ContentCopyIcon sx={{ fontSize: 16 }} />
-                          </IconButton>
-                        </Tooltip>
-                      </Box>
-                    </TableCell>
-                    <TableCell>
-                      <Chip 
-                        icon={getStatusIcon(contract.status)}
-                        label={contract.status}
-                        size="small"
-                        color={getStatusColor(contract.status)}
-                        sx={{ fontWeight: 500 }}
-                      />
-                    </TableCell>
-                    <TableCell>
-                      <Stack direction="row" spacing={1}>
-                        {contract.vulnerabilities?.map((vuln, index) => (
-                          <Chip
-                            key={`${contract.address}-vuln-${index}`}
-                            label={`${vuln.severity} (${vuln.count})`}
-                            size="small"
-                            color={getSeverityColor(vuln.severity)}
-                            sx={{ fontWeight: 500 }}
-                          />
-                        ))}
-                      </Stack>
-                    </TableCell>
-                    <TableCell>
-                      <Typography variant="body2" color="text.secondary">
-                        {formatDate(contract.lastAnalyzed)}
-                      </Typography>
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          </TableContainer>
-        </Paper>
+            {/* Graph View Tab Content */}
+            {activeTab === 1 && (
+              <Box sx={{ p: 3, minHeight: 600 }}>
+                {graphLoading ? (
+                  <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: 600 }}>
+                    <CircularProgress />
+                  </Box>
+                ) : !graphData ? (
+                  <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: 600 }}>
+                    <Typography color="text.secondary">No graph data available</Typography>
+                  </Box>
+                ) : (
+                  <TransactionGraph 
+                    data={graphData} 
+                    walletAddress={walletData.address}
+                  />
+                )}
+              </Box>
+            )}
+          </Paper>
+        </>
       )}
 
       <Snackbar

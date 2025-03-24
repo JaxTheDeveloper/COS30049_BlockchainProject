@@ -19,7 +19,8 @@ import {
   Button,
   Stack,
   TablePagination,
-  Container
+  Container,
+  Link
 } from '@mui/material';
 import { useNavigate } from 'react-router-dom';
 import VisibilityIcon from '@mui/icons-material/Visibility';
@@ -28,6 +29,7 @@ import WarningIcon from '@mui/icons-material/Warning';
 import ErrorIcon from '@mui/icons-material/Error';
 import CheckCircleIcon from '@mui/icons-material/CheckCircle';
 import PendingIcon from '@mui/icons-material/Pending';
+import OpenInNewIcon from '@mui/icons-material/OpenInNew';
 
 function ContractHistory() {
   const navigate = useNavigate();
