@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   Box,
   Container,
@@ -24,8 +24,7 @@ import {
   TableCell,
   TableContainer,
   TableHead,
-  TableRow,
-  Pagination
+  TableRow
 } from '@mui/material';
 import AddIcon from '@mui/icons-material/Add';
 import ArrowForwardIcon from '@mui/icons-material/ArrowForward';
@@ -43,18 +42,13 @@ import WarningIcon from '@mui/icons-material/Warning';
 import ErrorIcon from '@mui/icons-material/Error';
 import CheckCircleIcon from '@mui/icons-material/CheckCircle';
 import PendingIcon from '@mui/icons-material/Pending';
-import Graph from './Graph';
+import TransactionGraph from './TransactionGraph';
 
 function WalletInfo({ loading, error, walletData, marketData }) {
   const [copySuccess, setCopySuccess] = useState(false);
   const [activeTab, setActiveTab] = useState(0);
   const [graphData, setGraphData] = useState(null);
   const [graphLoading, setGraphLoading] = useState(false);
-  const [currentPage, setCurrentPage] = useState(1);
-  const [pageTransactions, setPageTransactions] = useState([]);
-  const [pageLoading, setPageLoading] = useState(false);
-  const [paginationError, setPaginationError] = useState(null);
-  const itemsPerPage = 10;
 
   const handleCopy = (text) => {
     navigator.clipboard.writeText(text);
@@ -114,32 +108,19 @@ function WalletInfo({ loading, error, walletData, marketData }) {
 
   const formatEthValue = (balance) => {
     if (!balance || !marketData?.price) return '0.00';
-    try {
-      const value = parseFloat(balance) * parseFloat(marketData.price);
-      if (isNaN(value)) return '0.00';
-      return new Intl.NumberFormat('en-US', {
-        minimumFractionDigits: 2,
-        maximumFractionDigits: 2
-      }).format(value);
-    } catch (e) {
-      console.error('Error formatting ETH value:', e);
-      return '0.00';
-    }
+    const value = parseFloat(balance) * parseFloat(marketData.price);
+    return new Intl.NumberFormat('en-US', {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2
+    }).format(value);
   };
 
   const formatEthPrice = (price) => {
     if (!price) return '0.00';
-    try {
-      const numPrice = parseFloat(price);
-      if (isNaN(numPrice)) return '0.00';
-      return new Intl.NumberFormat('en-US', {
-        minimumFractionDigits: 2,
-        maximumFractionDigits: 2
-      }).format(numPrice);
-    } catch (e) {
-      console.error('Error formatting ETH price:', e);
-      return '0.00';
-    }
+    return new Intl.NumberFormat('en-US', {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2
+    }).format(price);
   };
 
   const getTransactionType = (tx, walletAddress) => {
@@ -153,99 +134,22 @@ function WalletInfo({ loading, error, walletData, marketData }) {
     setActiveTab(newValue);
   };
 
-  const handlePageChange = (event, newPage) => {
-    setCurrentPage(newPage);
-  };
-
-  // Reset to first page when wallet changes
   useEffect(() => {
-    if (walletData?.address) {
-      setCurrentPage(1);
-      setPaginationError(null);
+    if (walletData?.address && activeTab === 1) {
+      setGraphLoading(true);
+      fetch(`http://localhost:5000/api/graph/wallet-graph/${walletData.address}`)
+        .then(res => res.json())
+        .then(data => {
+          setGraphData(data);
+        })
+        .catch(err => {
+          console.error('Error fetching graph data:', err);
+        })
+        .finally(() => {
+          setGraphLoading(false);
+        });
     }
-  }, [walletData?.address]);
-
-  // Fetch transactions for a specific page
-  const fetchTransactionsPage = async (page) => {
-    if (!walletData?.address) return;
-    
-    // Check if this page is already prefetched
-    if (walletData.allTransactions && page <= 3) {
-      console.log(`Using prefetched transactions for page ${page}`);
-      const startIndex = (page - 1) * itemsPerPage;
-      const endIndex = startIndex + itemsPerPage;
-      const pageData = walletData.allTransactions.slice(startIndex, endIndex);
-      
-      if (pageData.length > 0) {
-        setPageTransactions(pageData);
-        return;
-      }
-    }
-    
-    // If not prefetched or no transactions found, fetch from server
-    setPageLoading(true);
-    setPaginationError(null);
-    
-    try {
-      const response = await fetch(
-        `http://localhost:5000/api/wallet/${walletData.address}/transactions?page=${page}&offset=${itemsPerPage}`
-      );
-      
-      if (!response.ok) {
-        throw new Error('Failed to fetch transactions for this page');
-      }
-      
-      const data = await response.json();
-      setPageTransactions(data.recentTransactions);
-    } catch (error) {
-      console.error('Error fetching transaction page:', error);
-      setPaginationError('Error loading transactions. Please try again.');
-    } finally {
-      setPageLoading(false);
-    }
-  };
-
-  // Load transactions when page changes or when wallet data is first loaded
-  useEffect(() => {
-    if (walletData?.address && activeTab === 0) {
-      if (currentPage === 1) {
-        // First page is already in the wallet data
-        setPageTransactions(walletData.recentTransactions);
-      } else {
-        fetchTransactionsPage(currentPage);
-      }
-    }
-  }, [currentPage, walletData?.address, activeTab]);
-
-  const totalPages = useMemo(() => {
-    if (!walletData?.transactionCount) return 0;
-    
-    // Ensure we have a valid number for transactionCount
-    let txCount;
-    try {
-      txCount = parseInt(walletData.transactionCount);
-      if (isNaN(txCount)) {
-        console.warn('Invalid transaction count:', walletData.transactionCount);
-        txCount = walletData.recentTransactions?.length || 0;
-      }
-    } catch (e) {
-      console.error('Error parsing transaction count:', e);
-      txCount = walletData.recentTransactions?.length || 0;
-    }
-    
-    return Math.max(1, Math.ceil(txCount / itemsPerPage));
-  }, [walletData?.transactionCount, walletData?.recentTransactions?.length, itemsPerPage]);
-
-  // Determine which transactions to display based on current tab and page
-  const displayTransactions = useMemo(() => {
-    if (activeTab !== 0) return [];
-    
-    if (currentPage === 1 && walletData?.recentTransactions) {
-      return walletData.recentTransactions;
-    }
-    
-    return pageTransactions;
-  }, [activeTab, currentPage, walletData?.recentTransactions, pageTransactions]);
+  }, [walletData?.address, activeTab]);
 
   return (
     <Container maxWidth={false} sx={{ maxWidth: '1400px !important', py: 4 }}>
@@ -363,7 +267,7 @@ function WalletInfo({ loading, error, walletData, marketData }) {
                   <Grid item xs={12} md={4}>
                     <Box sx={{ p: 2, bgcolor: '#f8fafc', borderRadius: 1 }}>
                       <Typography variant="subtitle2" color="text.secondary" sx={{ mb: 2 }}>
-                        LAST CONFIRMED BLOCK
+                        LATEST BLOCK
                       </Typography>
                       {walletData.recentTransactions?.[0]?.blockNumber ? (
                         <Link
@@ -378,7 +282,6 @@ function WalletInfo({ loading, error, walletData, marketData }) {
                             alignItems: 'center',
                             gap: 0.5
                           }}
-                          title="View the last block with confirmed transactions for this wallet"
                         >
                           <Typography variant="body1" sx={{ fontFamily: 'monospace' }}>
                             #{walletData.recentTransactions[0].blockNumber}
@@ -682,203 +585,150 @@ function WalletInfo({ loading, error, walletData, marketData }) {
 
             {/* Transactions Tab Content */}
             {activeTab === 0 && (
-              <>
-                <TableContainer>
-                  <Table>
-                    <TableHead>
-                      <TableRow sx={{ bgcolor: '#f8f9fa' }}>
-                        <TableCell sx={{ color: '#718096', fontWeight: 500 }}>Hash</TableCell>
-                        <TableCell sx={{ color: '#718096', fontWeight: 500 }}>From</TableCell>
-                        <TableCell align="center" sx={{ color: '#718096', fontWeight: 500 }}>Type</TableCell>
-                        <TableCell sx={{ color: '#718096', fontWeight: 500 }}>To</TableCell>
-                        <TableCell sx={{ color: '#718096', fontWeight: 500 }}>Value</TableCell>
-                        <TableCell sx={{ color: '#718096', fontWeight: 500 }}>Age</TableCell>
-                      </TableRow>
-                    </TableHead>
-                    <TableBody>
-                      {pageLoading ? (
-                        <TableRow>
-                          <TableCell colSpan={6} align="center" sx={{ py: 4 }}>
-                            <CircularProgress size={30} />
-                          </TableCell>
-                        </TableRow>
-                      ) : paginationError ? (
-                        <TableRow>
-                          <TableCell colSpan={6} align="center">
-                            <Alert severity="error" sx={{ my: 2 }}>
-                              {paginationError}
-                            </Alert>
-                          </TableCell>
-                        </TableRow>
-                      ) : displayTransactions?.length > 0 ? (
-                        displayTransactions.map((tx) => (
-                          <TableRow 
-                            key={tx.hash}
-                            sx={{ 
-                              '&:hover': { 
-                                bgcolor: '#f8f9fa' 
-                              }
-                            }}
-                          >
-                            <TableCell>
-                              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                                <Link
-                                  href={getEtherscanLink('transaction', tx.hash)}
-                                  target="_blank"
-                                  rel="noopener noreferrer"
-                                  sx={{
-                                    textDecoration: 'none',
-                                    color: '#3498db',
-                                    '&:hover': { color: '#2980b9' },
-                                    display: 'flex',
-                                    alignItems: 'center',
-                                    gap: 0.5
-                                  }}
+              <TableContainer>
+                <Table>
+                  <TableHead>
+                    <TableRow sx={{ bgcolor: '#f8f9fa' }}>
+                      <TableCell sx={{ color: '#718096', fontWeight: 500 }}>Hash</TableCell>
+                      <TableCell sx={{ color: '#718096', fontWeight: 500 }}>From</TableCell>
+                      <TableCell align="center" sx={{ color: '#718096', fontWeight: 500 }}>Type</TableCell>
+                      <TableCell sx={{ color: '#718096', fontWeight: 500 }}>To</TableCell>
+                      <TableCell sx={{ color: '#718096', fontWeight: 500 }}>Value</TableCell>
+                      <TableCell sx={{ color: '#718096', fontWeight: 500 }}>Age</TableCell>
+                    </TableRow>
+                  </TableHead>
+                  <TableBody>
+                    {walletData.recentTransactions?.length > 0 ? (
+                      walletData.recentTransactions.map((tx) => (
+                        <TableRow 
+                          key={tx.hash}
+                          sx={{ 
+                            '&:hover': { 
+                              bgcolor: '#f8f9fa' 
+                            }
+                          }}
+                        >
+                          <TableCell>
+                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                              <Link
+                                href={getEtherscanLink('transaction', tx.hash)}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                sx={{
+                                  textDecoration: 'none',
+                                  color: '#3498db',
+                                  '&:hover': { color: '#2980b9' },
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  gap: 0.5
+                                }}
+                              >
+                                <Typography variant="body2" sx={{ fontFamily: 'monospace' }}>
+                                  {tx.hash.substring(0, 16)}...
+                                </Typography>
+                                <OpenInNewIcon sx={{ fontSize: 16 }} />
+                              </Link>
+                              <Tooltip title="Copy hash">
+                                <IconButton 
+                                  size="small"
+                                  onClick={() => handleCopy(tx.hash)}
+                                  sx={{ color: '#718096' }}
                                 >
-                                  <Typography variant="body2" sx={{ fontFamily: 'monospace' }}>
-                                    {tx.hash.substring(0, 16)}...
-                                  </Typography>
-                                  <OpenInNewIcon sx={{ fontSize: 16 }} />
-                                </Link>
-                                <Tooltip title="Copy hash">
-                                  <IconButton 
-                                    size="small"
-                                    onClick={() => handleCopy(tx.hash)}
-                                    sx={{ color: '#718096' }}
-                                  >
-                                    <ContentCopyIcon sx={{ fontSize: 16 }} />
-                                  </IconButton>
-                                </Tooltip>
-                              </Box>
-                            </TableCell>
-                            <TableCell>
-                              <Link
-                                href={getEtherscanLink('address', tx.from)}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                sx={{
-                                  textDecoration: 'none',
-                                  color: '#3498db',
-                                  '&:hover': { color: '#2980b9' }
-                                }}
-                              >
-                                <Typography variant="body2" sx={{ fontFamily: 'monospace' }}>
-                                  {tx.from.substring(0, 16)}...
-                                </Typography>
-                              </Link>
-                            </TableCell>
-                            <TableCell align="center">
-                              <Chip 
-                                label={getTransactionType(tx, walletData.address)}
-                                size="small"
-                                sx={{ 
-                                  bgcolor: getTransactionType(tx, walletData.address) === 'IN' 
-                                    ? '#e8f5e9' 
-                                    : '#fff5f5',
-                                  color: getTransactionType(tx, walletData.address) === 'IN' 
-                                    ? '#2ecc71' 
-                                    : '#e74c3c',
-                                  fontWeight: 500,
-                                  minWidth: '60px'
-                                }}
-                              />
-                            </TableCell>
-                            <TableCell>
-                              <Link
-                                href={getEtherscanLink('address', tx.to)}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                sx={{
-                                  textDecoration: 'none',
-                                  color: '#3498db',
-                                  '&:hover': { color: '#2980b9' }
-                                }}
-                              >
-                                <Typography variant="body2" sx={{ fontFamily: 'monospace' }}>
-                                  {tx.to.substring(0, 16)}...
-                                </Typography>
-                              </Link>
-                            </TableCell>
-                            <TableCell>
+                                  <ContentCopyIcon sx={{ fontSize: 16 }} />
+                                </IconButton>
+                              </Tooltip>
+                            </Box>
+                          </TableCell>
+                          <TableCell>
+                            <Link
+                              href={getEtherscanLink('address', tx.from)}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              sx={{
+                                textDecoration: 'none',
+                                color: '#3498db',
+                                '&:hover': { color: '#2980b9' }
+                              }}
+                            >
                               <Typography variant="body2" sx={{ fontFamily: 'monospace' }}>
-                                {tx.value} ETH
+                                {tx.from.substring(0, 16)}...
                               </Typography>
-                            </TableCell>
-                            <TableCell>
-                              <Typography variant="body2" color="text.secondary">
-                                {formatDate(tx.timeStamp)}
+                            </Link>
+                          </TableCell>
+                          <TableCell align="center">
+                            <Chip 
+                              label={getTransactionType(tx, walletData.address)}
+                              size="small"
+                              sx={{ 
+                                bgcolor: getTransactionType(tx, walletData.address) === 'IN' 
+                                  ? '#e8f5e9' 
+                                  : '#fff5f5',
+                                color: getTransactionType(tx, walletData.address) === 'IN' 
+                                  ? '#2ecc71' 
+                                  : '#e74c3c',
+                                fontWeight: 500,
+                                minWidth: '60px'
+                              }}
+                            />
+                          </TableCell>
+                          <TableCell>
+                            <Link
+                              href={getEtherscanLink('address', tx.to)}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              sx={{
+                                textDecoration: 'none',
+                                color: '#3498db',
+                                '&:hover': { color: '#2980b9' }
+                              }}
+                            >
+                              <Typography variant="body2" sx={{ fontFamily: 'monospace' }}>
+                                {tx.to.substring(0, 16)}...
                               </Typography>
-                            </TableCell>
-                          </TableRow>
-                        ))
-                      ) : (
-                        <TableRow>
-                          <TableCell colSpan={6} align="center">
-                            <Typography color="text.secondary">
-                              No transactions found
+                            </Link>
+                          </TableCell>
+                          <TableCell>
+                            <Typography variant="body2" sx={{ fontFamily: 'monospace' }}>
+                              {tx.value} ETH
+                            </Typography>
+                          </TableCell>
+                          <TableCell>
+                            <Typography variant="body2" color="text.secondary">
+                              {formatDate(tx.timeStamp)}
                             </Typography>
                           </TableCell>
                         </TableRow>
-                      )}
-                    </TableBody>
-                  </Table>
-                </TableContainer>
-                
-                {/* Pagination */}
-                {totalPages > 1 && (
-                  <Box
-                    sx={{
-                      display: 'flex',
-                      justifyContent: 'center',
-                      p: 3,
-                      borderTop: '1px solid #e7eaf3'
-                    }}
-                  >
-                    <Pagination
-                      count={totalPages}
-                      page={currentPage}
-                      onChange={handlePageChange}
-                      color="primary"
-                      showFirstButton
-                      showLastButton
-                      siblingCount={1}
-                      boundaryCount={1}
-                    />
-                  </Box>
-                )}
-                
-                {/* Transaction Count Summary */}
-                <Box
-                  sx={{
-                    display: 'flex',
-                    justifyContent: 'space-between',
-                    alignItems: 'center',
-                    px: 3,
-                    py: 2,
-                    borderTop: '1px solid #e7eaf3',
-                    bgcolor: '#f8f9fa'
-                  }}
-                >
-                  <Typography variant="body2" color="text.secondary">
-                    Showing {displayTransactions?.length || 0} of {walletData?.transactionCount || 0} transactions
-                  </Typography>
-                  
-                  <Typography variant="body2" color="text.secondary">
-                    Page {currentPage} of {totalPages}
-                  </Typography>
-                </Box>
-              </>
+                      ))
+                    ) : (
+                      <TableRow>
+                        <TableCell colSpan={6} align="center">
+                          <Typography color="text.secondary">
+                            No transactions found
+                          </Typography>
+                        </TableCell>
+                      </TableRow>
+                    )}
+                  </TableBody>
+                </Table>
+              </TableContainer>
             )}
 
             {/* Graph View Tab Content */}
             {activeTab === 1 && (
               <Box sx={{ p: 3, minHeight: 600 }}>
-                {!walletData?.address ? (
+                {graphLoading ? (
                   <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: 600 }}>
-                    <Typography color="text.secondary">No wallet address to display</Typography>
+                    <CircularProgress />
+                  </Box>
+                ) : !graphData ? (
+                  <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: 600 }}>
+                    <Typography color="text.secondary">No graph data available</Typography>
                   </Box>
                 ) : (
-                  <Graph address={walletData.address} />
+                  <TransactionGraph 
+                    data={graphData} 
+                    walletAddress={walletData.address}
+                  />
                 )}
               </Box>
             )}

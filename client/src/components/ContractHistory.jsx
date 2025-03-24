@@ -316,7 +316,7 @@ function ContractHistory() {
               <TableCell sx={{ fontWeight: 600, color: '#1e2022' }}>Status</TableCell>
               <TableCell sx={{ fontWeight: 600, color: '#1e2022' }}>Vulnerabilities</TableCell>
               <TableCell sx={{ fontWeight: 600, color: '#1e2022' }}>Description</TableCell>
-              <TableCell sx={{ fontWeight: 600, color: '#1e2022', width: '150px', bgcolor: '#e6f7ff' }}>Actions</TableCell>
+              <TableCell sx={{ fontWeight: 600, color: '#1e2022' }}>Actions</TableCell>
             </TableRow>
           </TableHead>
           <TableBody>
@@ -427,48 +427,23 @@ function ContractHistory() {
                       </Box>
                     )}
                   </TableCell>
-                  <TableCell sx={{ bgcolor: '#f0f9ff', padding: '16px', border: '1px solid #e1e4e8' }}>
-                    <Button
-                      variant="contained"
-                      color="primary"
-                      size="medium"
-                      fullWidth
-                      startIcon={<VisibilityIcon />}
+                  <TableCell>
+                    <IconButton
+                      className="action-button"
                       onClick={() => navigate(`/contract/${contract.id}`)}
-                      disabled={contract.status !== 'completed'}
-                      sx={{
-                        fontWeight: 600,
-                        borderRadius: 1,
-                        textTransform: 'none',
-                        padding: '8px 16px',
-                        boxShadow: '0 4px 6px rgba(50, 50, 93, 0.11)',
-                        mb: 1
+                      size="small"
+                      sx={{ 
+                        color: 'primary.main',
+                        opacity: 0.7,
+                        transition: 'all 0.2s',
+                        '&:hover': {
+                          bgcolor: 'primary.lighter',
+                          opacity: 1
+                        }
                       }}
                     >
-                      View Report
-                    </Button>
-                    {contract.status === 'failed' && (
-                      <Button
-                        variant="outlined"
-                        color="error"
-                        size="medium"
-                        fullWidth
-                        onClick={() => {
-                          fetch(`http://localhost:5000/api/contract/${contract.id}/reset`, {
-                            method: 'POST'
-                          })
-                          .then(() => loadContractHistory())
-                          .catch(err => console.error('Failed to reset analysis:', err));
-                        }}
-                        sx={{
-                          fontWeight: 500,
-                          borderRadius: 1,
-                          textTransform: 'none'
-                        }}
-                      >
-                        Retry Analysis
-                      </Button>
-                    )}
+                      <VisibilityIcon sx={{ fontSize: 20 }} />
+                    </IconButton>
                   </TableCell>
                 </TableRow>
               ))}

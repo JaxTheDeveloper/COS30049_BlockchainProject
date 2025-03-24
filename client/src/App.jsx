@@ -91,25 +91,15 @@ function AppContent() {
     const fetchMarketData = async () => {
       try {
         const response = await fetch('http://localhost:5000/api/market-data');
+        const data = await response.json();
         
         if (!response.ok) {
-          throw new Error('Failed to fetch market data');
+          throw new Error(data.error || 'Failed to fetch market data');
         }
 
-        const data = await response.json();
         setMarketData(data);
       } catch (err) {
         console.error('Error fetching market data:', err);
-        // Provide default market data when fetch fails
-        setMarketData({
-          price: '0.00',
-          marketCap: '0.0',
-          priceChange24h: '0.00',
-          volume24h: '0',
-          gasPrice: '0',
-          priceHistory: [],
-          transactionHistory: []
-        });
       }
     };
 
@@ -152,7 +142,6 @@ function AppContent() {
     try {
       setContractLoading(true);
       setContractData(null);
-      setError(null);
       
       // Fetch contract data using the report endpoint
       const response = await fetch(`http://localhost:5000/api/contract/${contractId}/report`);
@@ -163,16 +152,6 @@ function AppContent() {
       }
       
       console.log('[DEBUG] Contract analysis data:', data);
-      
-      // Ensure findings object exists
-      if (!data.findings) {
-        data.findings = {
-          vulnerabilities: [],
-          informational: [],
-          optimization: []
-        };
-      }
-      
       setContractData(data);
       
       // Reset wallet data when viewing contract analysis
@@ -180,16 +159,6 @@ function AppContent() {
     } catch (err) {
       console.error('[DEBUG] Contract analysis error:', err);
       setError(err.message || 'Error analyzing contract');
-      
-      // Set a minimal contract data structure to prevent undefined errors
-      setContractData({
-        status: 'error',
-        findings: {
-          vulnerabilities: [],
-          informational: [],
-          optimization: []
-        }
-      });
     } finally {
       setContractLoading(false);
     }
