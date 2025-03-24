@@ -46,13 +46,33 @@ function ContractHistory() {
     pending: 0
   });
 
+  // Add polling interval state
+  const [pollingInterval, setPollingInterval] = useState(null);
+
   useEffect(() => {
+    // Initial load
     loadContractHistory();
+
+    // Set up polling every 5 seconds
+    const interval = setInterval(() => {
+      loadContractHistory(false); // Pass false to indicate this is a background refresh
+    }, 5000);
+
+    setPollingInterval(interval);
+
+    // Cleanup polling on component unmount
+    return () => {
+      if (pollingInterval) {
+        clearInterval(pollingInterval);
+      }
+    };
   }, []);
 
-  const loadContractHistory = async () => {
+  const loadContractHistory = async (showLoading = true) => {
     try {
-      setLoading(true);
+      if (showLoading) {
+        setLoading(true);
+      }
       const response = await fetch('http://localhost:5000/api/contracts');
       const data = await response.json();
 
@@ -75,20 +95,10 @@ function ContractHistory() {
 
       data.forEach(contract => {
         if (contract.vulnerabilities) {
-          contract.vulnerabilities.forEach(vuln => {
-            newMetrics.totalVulnerabilities++;
-            switch (vuln.severity.toLowerCase()) {
-              case 'high':
-                newMetrics.highSeverity++;
-                break;
-              case 'medium':
-                newMetrics.mediumSeverity++;
-                break;
-              case 'low':
-                newMetrics.lowSeverity++;
-                break;
-            }
-          });
+          newMetrics.totalVulnerabilities += contract.vulnerabilities.total;
+          newMetrics.highSeverity += contract.vulnerabilities.high;
+          newMetrics.mediumSeverity += contract.vulnerabilities.medium;
+          newMetrics.lowSeverity += contract.vulnerabilities.low;
         }
         if (contract.status === 'completed') {
           newMetrics.analyzed++;
@@ -102,7 +112,9 @@ function ContractHistory() {
       console.error('Error loading contract history:', err);
       setError(err.message || 'Error loading contract history');
     } finally {
-      setLoading(false);
+      if (showLoading) {
+        setLoading(false);
+      }
     }
   };
 
@@ -146,20 +158,13 @@ function ContractHistory() {
   };
 
   const formatVulnerabilityCount = (vulnerabilities) => {
-    if (!vulnerabilities || !Array.isArray(vulnerabilities)) return [];
+    if (!vulnerabilities) return [];
     
     const counts = {
-      high: 0,
-      medium: 0,
-      low: 0
+      high: vulnerabilities.high || 0,
+      medium: vulnerabilities.medium || 0,
+      low: vulnerabilities.low || 0
     };
-
-    vulnerabilities.forEach(vuln => {
-      const severity = vuln.severity.toLowerCase();
-      if (counts.hasOwnProperty(severity)) {
-        counts[severity]++;
-      }
-    });
 
     return Object.entries(counts)
       .filter(([_, count]) => count > 0)
@@ -308,6 +313,7 @@ function ContractHistory() {
               <TableCell sx={{ fontWeight: 600, color: '#1e2022' }}>Upload Date</TableCell>
               <TableCell sx={{ fontWeight: 600, color: '#1e2022' }}>Status</TableCell>
               <TableCell sx={{ fontWeight: 600, color: '#1e2022' }}>Vulnerabilities</TableCell>
+              <TableCell sx={{ fontWeight: 600, color: '#1e2022' }}>Description</TableCell>
               <TableCell sx={{ fontWeight: 600, color: '#1e2022' }}>Actions</TableCell>
             </TableRow>
           </TableHead>
@@ -372,6 +378,52 @@ function ContractHistory() {
                         />
                       ))}
                     </Stack>
+                  </TableCell>
+                  <TableCell>
+                    <Typography 
+                      variant="body2" 
+                      sx={{ 
+                        fontFamily: 'Consolas, Monaco, "Courier New", monospace',
+                        whiteSpace: 'pre-wrap',
+                        bgcolor: '#f8f9fa',
+                        p: 1,
+                        borderRadius: 1,
+                        fontSize: '0.875rem',
+                        color: '#1e2022',
+                        border: '1px solid #e7eaf3'
+                      }}
+                    >
+                      {contract.description}
+                    </Typography>
+                    {contract.affectedLines && (
+                      <Box sx={{ mt: 2 }}>
+                        <Typography 
+                          variant="body2" 
+                          sx={{ 
+                            color: '#77838f',
+                            mb: 0.5,
+                            fontWeight: 500 
+                          }}
+                        >
+                          Affected Code Location:
+                        </Typography>
+                        <Typography 
+                          variant="body2" 
+                          sx={{ 
+                            fontFamily: 'Consolas, Monaco, "Courier New", monospace',
+                            whiteSpace: 'pre',
+                            bgcolor: '#f8f9fa',
+                            p: 1,
+                            borderRadius: 1,
+                            fontSize: '0.875rem',
+                            color: '#1e2022',
+                            border: '1px solid #e7eaf3'
+                          }}
+                        >
+                          Lines: {contract.affectedLines}
+                        </Typography>
+                      </Box>
+                    )}
                   </TableCell>
                   <TableCell>
                     <IconButton

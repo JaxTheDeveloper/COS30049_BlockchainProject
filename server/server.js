@@ -14,7 +14,7 @@ const util = require("util");
 const execPromise = util.promisify(exec);
 const crypto = require("crypto");
 const NodeCache = require("node-cache");
-
+// i dont know
 // config dotenv
 dotenv.config();
 
@@ -1698,6 +1698,65 @@ app.get("/api/wallet/:address", async (req, res) => {
             error: "Error fetching wallet data",
             details: error.message,
         });
+    }
+});
+
+// Get all contracts
+app.get("/api/contracts", async (req, res) => {
+    try {
+        const [contracts] = await mysqlPool.query(
+            `SELECT c.*, 
+                    ar.vulnerability_count,
+                    ar.high_severity_count,
+                    ar.medium_severity_count,
+                    ar.low_severity_count,
+                    ar.report_json
+             FROM contracts c
+             LEFT JOIN analysis_reports ar ON c.id = ar.contract_id
+             ORDER BY c.upload_date DESC`
+        );
+
+        // Process contracts to include vulnerability information
+        const processedContracts = contracts.map(contract => {
+            let description = '';
+            let affectedLines = '';
+            
+            // Parse report JSON if available
+            if (contract.report_json) {
+                try {
+                    const report = JSON.parse(contract.report_json);
+                    if (report.results && report.results.detectors && report.results.detectors.length > 0) {
+                        const firstIssue = report.results.detectors[0];
+                        description = firstIssue.description || '';
+                        affectedLines = firstIssue.lines ? firstIssue.lines.join(', ') : '';
+                    }
+                } catch (e) {
+                    console.error('Error parsing report JSON:', e);
+                }
+            }
+
+            return {
+                id: contract.id,
+                name: contract.name,
+                address: contract.address,
+                filename: contract.filename,
+                status: contract.status,
+                upload_date: contract.upload_date,
+                description: description,
+                affectedLines: affectedLines,
+                vulnerabilities: {
+                    total: contract.vulnerability_count || 0,
+                    high: contract.high_severity_count || 0,
+                    medium: contract.medium_severity_count || 0,
+                    low: contract.low_severity_count || 0
+                }
+            };
+        });
+
+        res.json(processedContracts);
+    } catch (error) {
+        console.error("Error fetching contracts:", error);
+        res.status(500).json({ error: "Failed to fetch contracts" });
     }
 });
 
